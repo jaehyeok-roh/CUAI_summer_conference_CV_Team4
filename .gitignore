@@ -1,0 +1,22 @@
+# 1. Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 2. PyTorch & Model Weights
+*.pth
+*.pt
+*.ckpt
+
+# 3. Data & Images
+/data/
+/dataset/
+/images/
+*.jpg
+*.jpeg
+*.png
+
+# 4. IDE & OS
+.vscode/
+.idea/
+.DS_Store
