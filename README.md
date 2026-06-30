@@ -1,6 +1,8 @@
 # CUAI_summer_conference_CV_Team4
 CUAI 하계 커너퍼런스 CV 4팀
 
+---
+
 ## (가제) Low-Light Neural Image Compression with Edge-Preserving Attention
 > **CUAI 2026 하계 컨퍼런스 프로젝트**  
 > 저조도 노이즈 환경 특화 End-to-End 동시 압축-복원 네트워크
