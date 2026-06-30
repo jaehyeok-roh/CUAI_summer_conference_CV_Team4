@@ -63,7 +63,7 @@ pip install matplotlib numpy opencv-python
 
 <br>
 
-##👥 팀원 (Team)  - 추후 수정예정
+## 👥 팀원 (Team)  - 추후 수정예정
 인선우 - Data Preprocessing, Loss Function 커스텀, Training Pipeline 구축 
 노재혁 - CompressAI Architecture 분석, CBAM 결합, Evaluation & Visualization
 
