@@ -41,3 +41,32 @@ CUAI 하계 커너퍼런스 CV 4팀
 #### 3. Loss-Level: Edge-Preserving Loss
 * 기존 압축 모델의 Rate-Distortion Loss (BPP + MSE)는 픽셀 간 단순 오차만 계산하여 Blur 현상을 유발.
 * 형태 보존력을 극대화하기 위해 **Sobel Filter 기반의 Edge Loss**를 추가 도입하여 손실 함수 최적화.
+
+<br>
+
+## 🛠️ 개발 환경 및 설치 (Prerequisites & Installation)
+
+```bash
+# 1. 가상환경 생성 및 활성화 (선택)
+conda create -n neural_comp python=3.10
+conda activate neural_comp
+
+# 2. 필수 라이브러리 설치
+pip install torch torchvision
+pip install compressai
+pip install matplotlib numpy opencv-python
+<br>
+🚀 빠른 시작 (Quick Start)
+(작성 예정)
+```
+<br>
+
+👥 팀원 (Team)  - 추후 수정예정
+인선우 - Data Preprocessing, Loss Function 커스텀, Training Pipeline 구축 
+노재혁 - CompressAI Architecture 분석, CBAM 결합, Evaluation & Visualization
+<br>
+📝 License
+This project is licensed under the MIT License - see the LICENSE file for details.
+🙏 Acknowledgments
+본 프로젝트는 중앙대학교 인공지능 학회 CUAI 2026 하계 컨퍼런스의 일환으로 진행되었습니다.
+Base code is built upon CompressAI.
