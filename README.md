@@ -55,10 +55,10 @@ conda activate neural_comp
 pip install torch torchvision
 pip install compressai
 pip install matplotlib numpy opencv-python
+```
 <br>
 🚀 빠른 시작 (Quick Start)
 (작성 예정)
-```
 <br>
 
 👥 팀원 (Team)  - 추후 수정예정
