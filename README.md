@@ -23,7 +23,7 @@ CUAI 하계 커너퍼런스 CV 4팀
 
 | 원본 이미지 (Original) | 압축 복원 이미지 (Reconstructed - 기존 모델) |
 | :---: | :---: |
-| <img src="[원본사진링크]" width="300"> | <img src="[압축사진링크]" width="300"> |
+| <img width="611" height="382" alt="image" src="https://github.com/user-attachments/assets/af7bf95e-30d2-499e-a719-bd8568ed3840" width="300"> | <img width="611" height="380" alt="image" src="https://github.com/user-attachments/assets/801ee66d-aa8f-4612-898b-8b4e7ccf72d0" width="300"> |
 | *어둡고 노이즈가 낀 원본* | *글씨와 엣지가 녹아내린 복원 결과* |
 
 <br>
