@@ -57,16 +57,19 @@ pip install compressai
 pip install matplotlib numpy opencv-python
 ```
 <br>
-🚀 빠른 시작 (Quick Start)
+##🚀 빠른 시작 (Quick Start)
 (작성 예정)
 <br>
 
-👥 팀원 (Team)  - 추후 수정예정
+##👥 팀원 (Team)  - 추후 수정예정
 인선우 - Data Preprocessing, Loss Function 커스텀, Training Pipeline 구축 
 노재혁 - CompressAI Architecture 분석, CBAM 결합, Evaluation & Visualization
+
 <br>
-📝 License
+
+##📝 License
 This project is licensed under the MIT License - see the LICENSE file for details.
-🙏 Acknowledgments
+
+##🙏 Acknowledgments
 본 프로젝트는 중앙대학교 인공지능 학회 CUAI 2026 하계 컨퍼런스의 일환으로 진행되었습니다.
 Base code is built upon CompressAI.
