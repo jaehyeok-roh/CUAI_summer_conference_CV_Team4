@@ -1,3 +1,8 @@
+import math
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
 def rgb_to_gray(x):
     r, g, b = x[:, 0:1], x[:, 1:2], x[:, 2:3]
     return 0.299 * r + 0.587 * g + 0.114 * b
@@ -83,7 +88,7 @@ class RateDistortionEdgeLoss(nn.Module):
 
         return loss, {'bpp': bpp.item(), 'distortion_term': distortion_term.item(), 'edge_term': edge_term.item()}
     
-    
+
 @torch.no_grad()
 def measure_loss_scales(model, loader, criterion, n_batches=20, device=None):
     if device is None: device = next(model.parameters()).device
