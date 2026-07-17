@@ -1,0 +1,21 @@
+# 1. Deep Learning Core
+torch>=2.0.0
+torchvision>=0.15.0
+
+# 2. Image Compression Backbone
+compressai>=1.2.4
+
+# 3. Evaluation & Metrics
+torchmetrics>=1.0.0
+
+# 4. Data Processing & Visualization
+matplotlib>=3.7.0
+Pillow>=9.5.0
+numpy>=1.24.0
+
+# 5. Cloud & Downloading Utilities
+huggingface-hub>=0.16.0
+gdown>=4.7.1
+
+# 6. WandB
+wandb>=0.15.0
