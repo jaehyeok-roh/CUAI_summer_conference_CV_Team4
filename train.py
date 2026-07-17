@@ -11,16 +11,17 @@ from loss import RateDistortionEdgeLoss, calibrate_edge_weight
 from dataset import LOLDataset
 
 # ==========================================
-# ⚙️ Configuration
+# Configuration
 # ==========================================
 CONFIG = {
-    "dataset_path": "/workspace/data/our485",  # 서버의 데이터셋 경로
+    "dataset_path": "/workspace/data/lol_dataset/our485",  # 서버의 데이터셋 경로
     "save_dir": "./checkpoints",
     "batch_size": 16,
     "num_workers": 4,
     "epochs": 100,
     "quality": 2,          # CompressAI 타겟 퀄리티
     "target_ratio": 0.10,  # Edge 가중치 타겟 비중 (10%)
+    "cbam_position": "decoder",  # CBAM 이식 위치 ("encoder" 또는 "decoder")
     "lr": 1e-4,
     "aux_lr": 1e-3,
     "lmbda": 0.0035,
@@ -35,7 +36,7 @@ def main():
     # 1. WandB 초기화 및 연동 (프로젝트명과 실험 이름)
     wandb.init(
         project="CUAI_summer_Project",
-        name=f"OURS_Q{CONFIG['quality']}_Ratio{int(CONFIG['target_ratio']*100)}",
+        name=f"OURS_{CONFIG['cbam_position'].upper()}_Q{CONFIG['quality']}_Ratio{int(CONFIG['target_ratio']*100)}",
         config=CONFIG
     )
 
@@ -53,9 +54,17 @@ def main():
     model = bmshj2018_hyperprior(quality=CONFIG["quality"], pretrained=True).to(device)
     cbam_module = CBAM(in_channels=model.M, reduction=16).to(device)
     
-    decoder_layers = list(model.g_s.children())
-    decoder_layers.insert(0, cbam_module)
-    model.g_s = nn.Sequential(*decoder_layers)
+    if CONFIG["cbam_position"] == "encoder":
+        encoder_layers = list(model.g_a.children())
+        encoder_layers.append(cbam_module)           
+        model.g_a = nn.Sequential(*encoder_layers)
+    elif CONFIG["cbam_position"] == "decoder":
+        decoder_layers = list(model.g_s.children())
+        decoder_layers.insert(0, cbam_module)        
+        model.g_s = nn.Sequential(*decoder_layers)
+    else:
+        raise ValueError("cbam_position config must be either 'encoder' or 'decoder'")
+
     model.train()
 
     # 4. 손실 함수 (Edge Loss 비율 자동 계산)
@@ -112,7 +121,7 @@ def main():
         print(f"Epoch [{epoch+1:03d}/{CONFIG['epochs']}] "
               f"Loss: {avg_loss:.4f} | BPP: {avg_bpp:.4f} | MSE_term: {avg_mse:.4f} | Edge_term: {avg_edge:.4f}")
 
-        # ★ WandB 로 실시간 전송
+        # WandB 로 실시간 전송
         wandb.log({
             "Train/Loss_Total": avg_loss,
             "Train/BPP": avg_bpp,
@@ -123,10 +132,10 @@ def main():
 
         # 가중치 자동 저장(CheckPoint)
         if (epoch + 1) % CONFIG["eval_interval"] == 0:
-            torch.save(model.state_dict(), os.path.join(CONFIG["save_dir"], f"ours_Q{CONFIG['quality']}_epoch_{epoch+1}.pth"))
+            torch.save(model.state_dict(), os.path.join(CONFIG["save_dir"], f"ours_{CONFIG['cbam_position']}_Q{CONFIG['quality']}_epoch_{epoch+1}.pth"))
 
     # 최종 가중치 저장 및 종료
-    final_path = os.path.join(CONFIG["save_dir"], f"ours_FINAL_Q{CONFIG['quality']}_Ratio{int(CONFIG['target_ratio']*100)}.pth")
+    final_path = os.path.join(CONFIG["save_dir"], f"ours_FINAL_{CONFIG['cbam_position']}_Q{CONFIG['quality']}_Ratio{int(CONFIG['target_ratio']*100)}.pth")
     torch.save(model.state_dict(), final_path)
     wandb.finish()
 
