@@ -1,27 +1,47 @@
 """
 배치 사이즈 한계 테스트 전용 스크립트.
-실제 학습(train.py)과 동일한 모델 구조(CBAM 포함)로 forward+backward 한 번씩만 돌려서
-OOM(메모리 부족)이 나는 지점을 찾는다. 데이터셋/저장/wandb 없이 랜덤 텐서로만 테스트.
+실제 학습(train.py)과 동일한 모델 구조(CBAM 포함) + 실제 LOL 데이터셋으로
+forward+backward 한 번씩만 돌려서 OOM(메모리 부족)이 나는 지점을 찾는다.
+저장/wandb는 안 함 (메모리 측정만 목적).
 
 사용법 (vast.ai 인스턴스, 레포 루트에서):
     python find_max_batch.py
+
+⚠️ 실행 전에 DATASET_PATH에 실제 LOL 데이터셋이 준비돼 있어야 함
+   (hf download ... 로 받아서 unzip까지 끝낸 상태).
 """
+import random
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from compressai.zoo import bmshj2018_hyperprior
 from models import CBAM
+from dataset import LOLDataset
 
 # ==========================================
-# 실제 학습 설정과 동일하게 맞출 것 (train.py CONFIG 참고)
+# 실제 학습 설정과 동일하게 맞출 것 (train.py / baseline3_train.py CONFIG 참고)
 # ==========================================
 QUALITY = 2
 CROP_SIZE = 256
 CBAM_POSITION = "none"  # "encoder" / "decoder" / "none" — train.py와 동일하게 (Baseline 3: none)
+DATASET_PATH = "/workspace/data/lol_dataset/our485"  # 실제 데이터셋 경로
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 if device == "cpu":
     raise SystemExit("GPU가 안 잡힙니다. nvidia-smi로 확인하세요.")
+
+dataset = LOLDataset(root_dir=DATASET_PATH, crop_size=CROP_SIZE)
+print(f"[데이터셋] {DATASET_PATH} | 이미지 {len(dataset)}장\n")
+
+
+def get_real_batch(bs):
+    """데이터셋에서 bs장을 랜덤으로 뽑아 실제 이미지 배치를 만든다.
+    (bs가 데이터셋 크기보다 커도 되도록 복원추출)"""
+    idxs = [random.randrange(len(dataset)) for _ in range(bs)]
+    low_list, high_list = zip(*(dataset[i] for i in idxs))
+    x = torch.stack(low_list).to(device)
+    y = torch.stack(high_list).to(device)
+    return x, y
 
 
 def build_model():
@@ -51,8 +71,7 @@ def try_batch(bs):
     optimizer = optim.Adam(params, lr=1e-4)
     aux_optimizer = optim.Adam(aux_params, lr=1e-3)
 
-    x = torch.rand(bs, 3, CROP_SIZE, CROP_SIZE, device=device)  # 랜덤 이미지로 대체 (데이터 로딩 불필요)
-    y = torch.rand(bs, 3, CROP_SIZE, CROP_SIZE, device=device)
+    x, y = get_real_batch(bs)  # 실제 LOL 데이터셋에서 뽑은 배치 (low, high)
 
     optimizer.zero_grad()
     aux_optimizer.zero_grad()
