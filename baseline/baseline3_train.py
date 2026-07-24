@@ -16,7 +16,7 @@ from dataset import LOLDataset
 CONFIG = {
     "dataset_path": "/workspace/data/lol_dataset/our485",  # 서버의 데이터셋 경로
     "save_dir": "./checkpoints",
-    "batch_size": 16,
+    "batch_size": 128,  # find_max_batch.py 테스트 결과(최대 204) 기준 안전 마진 적용
     "num_workers": 4,
     "epochs": 100,
     "quality": 2,          # CompressAI 타겟 퀄리티
