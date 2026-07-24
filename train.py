@@ -35,7 +35,7 @@ def main():
     
     # 1. WandB 초기화 및 연동 (프로젝트명과 실험 이름)
     wandb.init(
-        entity="nojh4237-chung-ang-university"
+        entity="nojh4237-chung-ang-university",
         project="CUAI_summer_Project",
         name=f"OURS_{CONFIG['cbam_position'].upper()}_Q{CONFIG['quality']}_Ratio{int(CONFIG['target_ratio']*100)}",
         config=CONFIG
