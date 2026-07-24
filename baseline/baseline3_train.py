@@ -21,7 +21,7 @@ CONFIG = {
     "epochs": 100,
     "quality": 2,          # CompressAI 타겟 퀄리티
     "target_ratio": 0.0,  # Edge 가중치 타겟 비중 (0%)
-    "cbam_position": "None",  # CBAM 이식 위치 ("encoder" 또는 "decoder")
+    "cbam_position": "none",  # Baseline 3: CBAM 없음 ("encoder", "decoder", "none" 중 하나)
     "lr": 1e-4,
     "aux_lr": 1e-3,
     "lmbda": 0.0035,
