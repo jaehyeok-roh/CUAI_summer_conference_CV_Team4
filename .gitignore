@@ -20,3 +20,7 @@ __pycache__/
 .vscode/
 .idea/
 .DS_Store
+
+# 5. 개인/참고 자료 (레포에 안 올림)
+/Optimizing Image Compression via Joint Learning with Denoising.pdf
+/주제발표/
