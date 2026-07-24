@@ -3,7 +3,7 @@
 실제 학습(train.py)과 동일한 모델 구조(CBAM 포함)로 forward+backward 한 번씩만 돌려서
 OOM(메모리 부족)이 나는 지점을 찾는다. 데이터셋/저장/wandb 없이 랜덤 텐서로만 테스트.
 
-사용법 (vast.ai 인스턴스, ours/ 폴더 안에서):
+사용법 (vast.ai 인스턴스, 레포 루트에서):
     python find_max_batch.py
 """
 import torch
@@ -17,7 +17,7 @@ from models import CBAM
 # ==========================================
 QUALITY = 2
 CROP_SIZE = 256
-CBAM_POSITION = "decoder"  # "encoder" / "decoder" / "none" — train.py와 동일하게
+CBAM_POSITION = "none"  # "encoder" / "decoder" / "none" — train.py와 동일하게 (Baseline 3: none)
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 if device == "cpu":
