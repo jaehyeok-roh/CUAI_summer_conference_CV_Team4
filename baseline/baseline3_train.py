@@ -1,9 +1,14 @@
 import os
+import sys
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 import wandb
+
+# models.py/loss.py/dataset.py는 레포 루트에 있음 (이 파일은 baseline/ 안에 있음)
+# -> 어디서 실행하든 항상 루트를 import 경로에 추가해서 찾게 함
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from compressai.zoo import bmshj2018_hyperprior
 from models import CBAM
