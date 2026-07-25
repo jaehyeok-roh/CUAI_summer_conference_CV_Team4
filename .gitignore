@@ -27,3 +27,4 @@ __pycache__/
 /rd_results.json
 /backup_checkpoints.py
 /save_baseline3_results.py
+/.cache_lol_dataset/
