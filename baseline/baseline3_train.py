@@ -21,9 +21,9 @@ from dataset import LOLDataset
 CONFIG = {
     "dataset_path": "/workspace/data/lol_dataset/our485",  # 서버의 데이터셋 경로
     "save_dir": "./checkpoints",
-    "batch_size": 128,  # find_max_batch.py 테스트 결과(최대 204) 기준 안전 마진 적용
+    "batch_size": 32,  # 더 안전한 마진 (find_max_batch.py 최대 204 기준)
     "num_workers": 4,
-    "epochs": 100,
+    "epochs": 300,
     "quality": 2,          # CompressAI 타겟 퀄리티
     "target_ratio": 0.0,  # Edge 가중치 타겟 비중 (0%)
     "cbam_position": "none",  # Baseline 3: CBAM 없음 ("encoder", "decoder", "none" 중 하나)
@@ -42,6 +42,7 @@ def main():
     # cbam_position=none, target_ratio=0.0 -> Baseline 3 (순정 CompressAI + LOL, CBAM/Edge Loss 없음)
     variant = "BASELINE3" if CONFIG["cbam_position"] == "none" else "OURS"
     wandb.init(
+        entity="nojh4237-chung-ang-university",
         project="CUAI_summer_Project",
         name=f"{variant}_{CONFIG['cbam_position'].upper()}_Q{CONFIG['quality']}_Ratio{int(CONFIG['target_ratio']*100)}",
         config=CONFIG
