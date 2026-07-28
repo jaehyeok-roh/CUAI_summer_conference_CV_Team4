@@ -1,143 +1,172 @@
 import os
 import torch
-import torch.nn as nn
 import torch.optim as optim
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 import wandb
 
-from compressai.zoo import bmshj2018_hyperprior
-from models import CBAM
-from loss import RateDistortionEdgeLoss, calibrate_edge_weight
 from dataset import LOLDataset
+from models import HyperpriorWithCBAM
+from loss import RateDistortionEdgeLoss
 
-# ==========================================
-# Configuration
-# ==========================================
+# 환경 구성 설정
 CONFIG = {
-    "dataset_path": "/workspace/data/lol_dataset/our485",  # 서버의 데이터셋 경로
+    "train_path": "/workspace/data/lol_dataset/our485", 
+    "val_path": "/workspace/data/lol_dataset/eval15",
     "save_dir": "./checkpoints",
-    "batch_size": 16,
+    "batch_size": 32,             
     "num_workers": 4,
-    "epochs": 100,
-    "quality": 2,          # CompressAI 타겟 퀄리티
-    "target_ratio": 0.10,  # Edge 가중치 타겟 비중 (10%)
-    "cbam_position": "decoder",  # CBAM 이식 위치 ("encoder" 또는 "decoder")
-    "lr": 1e-4,
-    "aux_lr": 1e-3,
+    "epochs": 300,                
+    "warmup_epochs": 5,          # 초반 압축기 보호용 가중치 동결 에포크
+    "save_interval": 10,         # 정기 체크포인트 저장 주기
+    "quality": 2,          
+    "edge_weight": 0.1,          # Baseline 3 훈련시 0.0 으로 세팅      
+    "mse_blur_sigma": 1.0,       # 어긋남 방지를 위한 MSE 블러 적용 (비활성화 시 0.0)
+    "cbam_position": "decoder",  # Baseline 3 훈련시 "none" 으로 세팅
+    "lr": 1e-4,                   
+    "min_lr": 1e-6,               
+    "aux_lr": 1e-3,              # aux_lr 은 스케줄러 없이 1e-3 으로 고정
     "lmbda": 0.0035,
-    "eval_interval": 10    # 자동 저장(체크포인트) 간격
 }
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+# 지표 검증 모듈
+try:
+    from torchmetrics.functional.image import peak_signal_noise_ratio as compute_psnr
+    from torchmetrics.functional.image import structural_similarity_index_measure as compute_ssim
+except ImportError:
+    raise ImportError("torchmetrics 설치가 필요합니다.")
+
+def freeze_base_model(model, freeze=True):
+    """ CompressAI 베이스라인 파라미터의 requires_grad 상태를 제어 """
+    for name, param in model.named_parameters():
+        if "cbam" not in name:
+            param.requires_grad = not freeze
+
 def main():
     os.makedirs(CONFIG["save_dir"], exist_ok=True)
     
-    # 1. WandB 초기화 및 연동 (프로젝트명과 실험 이름)
     wandb.init(
         entity="nojh4237-chung-ang-university",
         project="CUAI_summer_Project",
-        name=f"OURS_{CONFIG['cbam_position'].upper()}_Q{CONFIG['quality']}_Ratio{int(CONFIG['target_ratio']*100)}",
+        name=f"Model_{CONFIG['cbam_position'].upper()}_Q{CONFIG['quality']}_Weight{CONFIG['edge_weight']}",
         config=CONFIG
     )
 
-    # 2. 데이터셋 로드
-    train_dataset = LOLDataset(root_dir=CONFIG["dataset_path"], crop_size=256)
-    train_loader = DataLoader(
-        train_dataset, 
-        batch_size=CONFIG["batch_size"], 
-        shuffle=True, 
-        num_workers=CONFIG["num_workers"], 
-        pin_memory=True
-    )
-
-    # 3. 모델 세팅 & CBAM 이식
-    model = bmshj2018_hyperprior(quality=CONFIG["quality"], pretrained=True).to(device)
-    cbam_module = CBAM(in_channels=model.M, reduction=16).to(device)
+    train_dataset = LOLDataset(root_dir=CONFIG["train_path"], crop_size=256, is_train=True)
+    val_dataset = LOLDataset(root_dir=CONFIG["val_path"], crop_size=256, is_train=False)
     
-    if CONFIG["cbam_position"] == "encoder":
-        encoder_layers = list(model.g_a.children())
-        encoder_layers.append(cbam_module)           
-        model.g_a = nn.Sequential(*encoder_layers)
-    elif CONFIG["cbam_position"] == "decoder":
-        decoder_layers = list(model.g_s.children())
-        decoder_layers.insert(0, cbam_module)        
-        model.g_s = nn.Sequential(*decoder_layers)
-    else:
-        raise ValueError("cbam_position config must be either 'encoder' or 'decoder'")
+    train_loader = DataLoader(train_dataset, batch_size=CONFIG["batch_size"], shuffle=True, num_workers=CONFIG["num_workers"], pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=CONFIG["batch_size"], shuffle=False, num_workers=CONFIG["num_workers"], pin_memory=True)
 
-    model.train()
+    model = HyperpriorWithCBAM(
+        quality=CONFIG["quality"], 
+        cbam_position=CONFIG["cbam_position"], 
+        pretrained=True
+    ).to(device)
 
-    # 4. 손실 함수 (Edge Loss 비율 자동 계산)
-    dummy_criterion = RateDistortionEdgeLoss(lmbda=CONFIG["lmbda"], edge_weight=0.1, mse_blur_sigma=0.0).to(device)
-    optimal_gamma = calibrate_edge_weight(
-        model=model, loader=train_loader, criterion=dummy_criterion, 
-        target_ratio=CONFIG["target_ratio"], n_batches=5, device=device, verbose=False
-    )
-    
-    wandb.config.update({"optimal_gamma": optimal_gamma}) # 찾아낸 가중치값도 WandB 기록
-    criterion = RateDistortionEdgeLoss(lmbda=CONFIG["lmbda"], edge_weight=optimal_gamma, mse_blur_sigma=0.0).to(device)
+    # 정적 가중치와 시그마 값이 적용된 Loss 모듈 초기화
+    criterion = RateDistortionEdgeLoss(
+        lmbda=CONFIG["lmbda"], 
+        edge_weight=CONFIG["edge_weight"], 
+        mse_blur_sigma=CONFIG["mse_blur_sigma"]
+    ).to(device)
 
-    # 5. 최적화 도구 세팅
+    # 스케줄러 & 옵티마이저 정의
     params = [p for n, p in model.named_parameters() if not n.endswith(".quantiles")]
     aux_params = [p for n, p in model.named_parameters() if n.endswith(".quantiles")]
+    
     optimizer = optim.Adam(params, lr=CONFIG["lr"])
     aux_optimizer = optim.Adam(aux_params, lr=CONFIG["aux_lr"])
+    
+    # 메인 파라미터에만 스케줄러 적용
+    scheduler = CosineAnnealingLR(optimizer, T_max=CONFIG["epochs"], eta_min=CONFIG["min_lr"])
 
-    print(f"Training started on {device} (Epochs: {CONFIG['epochs']})")
+    print(f"Setup Completed - Starting Run on {device} (Limit Epochs: {CONFIG['epochs']})")
 
-    # 6. 메인 학습 루프
     for epoch in range(CONFIG["epochs"]):
-        total_loss, total_bpp, total_mse, total_edge = 0.0, 0.0, 0.0, 0.0
+        is_warmup = epoch < CONFIG["warmup_epochs"]
+        freeze_base_model(model, freeze=is_warmup)
+        
+        # --- TRAIN ---
+        model.train()
+        train_loss, train_bpp, train_mse, train_edge = 0.0, 0.0, 0.0, 0.0
         
         for low_img, high_img in train_loader:
             low_img, high_img = low_img.to(device), high_img.to(device)
-            
-            optimizer.zero_grad()
-            aux_optimizer.zero_grad()
+            optimizer.zero_grad(); aux_optimizer.zero_grad()
             
             out_net = model(low_img)
             loss, logs = criterion(out_net, high_img)
-            
             loss.backward()
             optimizer.step()
             
-            model.aux_loss().backward()
-            aux_optimizer.step()
+            if not is_warmup:
+                model.aux_loss().backward()
+                aux_optimizer.step()
             
-            # 메트릭 합산
-            total_loss += loss.item()
-            total_bpp += logs['bpp']
-            total_mse += logs['distortion_term']
-            total_edge += logs['edge_term']
+            train_loss += loss.item()
+            train_bpp += logs['bpp']
+            train_mse += logs['distortion_term']
+            train_edge += logs['edge_term']
             
-        # 에포크 당 평균값 계산
+        scheduler.step()
+        
         steps = len(train_loader)
-        avg_loss = total_loss / steps
-        avg_bpp = total_bpp / steps
-        avg_mse = total_mse / steps
-        avg_edge = total_edge / steps
+        avg_train_loss = train_loss / steps
 
-        # 터미널용 1줄 로그
-        print(f"Epoch [{epoch+1:03d}/{CONFIG['epochs']}] "
-              f"Loss: {avg_loss:.4f} | BPP: {avg_bpp:.4f} | MSE_term: {avg_mse:.4f} | Edge_term: {avg_edge:.4f}")
+        # --- VALIDATION ---
+        model.eval()
+        val_loss, val_bpp, val_psnr, val_ssim = 0.0, 0.0, 0.0, 0.0
+        logged_images = False
 
-        # WandB 로 실시간 전송
+        with torch.no_grad():
+            for low_img, high_img in val_loader:
+                low_img, high_img = low_img.to(device), high_img.to(device)
+                
+                out_net = model(low_img)
+                loss, logs = criterion(out_net, high_img)
+                x_hat = out_net['x_hat'].clamp(0, 1)
+
+                val_loss += loss.item()
+                val_bpp += logs['bpp']
+                val_psnr += compute_psnr(x_hat, high_img, data_range=1.0).item()
+                val_ssim += compute_ssim(x_hat, high_img, data_range=1.0).item()
+
+                if not logged_images:
+                    idx = 0  
+                    wandb.log({
+                        "Visuals/1_Low_Input": wandb.Image(low_img[idx].cpu(), caption="Low Light (Input)"),
+                        "Visuals/2_Ours_Recon": wandb.Image(x_hat[idx].cpu(), caption="Reconstructed (Ours)"),
+                        "Visuals/3_High_Target": wandb.Image(high_img[idx].cpu(), caption="High Light (Target)")
+                    }, commit=False)  
+                    logged_images = True
+
+        v_steps = len(val_loader)
+        avg_val_loss = val_loss / v_steps
+        avg_psnr = val_psnr / v_steps
+        
+        mode_str = "[WARMUP]" if is_warmup else "[TRAIN]"
+        print(f"Epoch {mode_str} [{epoch+1:03d}/{CONFIG['epochs']}] Loss [T/V]: {avg_train_loss:.4f}/{avg_val_loss:.4f} | PSNR: {avg_psnr:.2f}")
+        
         wandb.log({
-            "Train/Loss_Total": avg_loss,
-            "Train/BPP": avg_bpp,
-            "Train/MSE_Term": avg_mse,
-            "Train/Edge_Term": avg_edge,
-            "Epoch": epoch + 1
+            "Train/Loss": avg_train_loss, "Train/BPP": train_bpp / steps, "Train/LR": optimizer.param_groups[0]['lr'],
+            "Val/Loss": avg_val_loss, "Val/BPP": val_bpp / v_steps, "Val/PSNR": avg_psnr, "Val/SSIM": val_ssim / v_steps, "Epoch": epoch + 1
         })
 
-        # 가중치 자동 저장(CheckPoint)
-        if (epoch + 1) % CONFIG["eval_interval"] == 0:
-            torch.save(model.state_dict(), os.path.join(CONFIG["save_dir"], f"ours_{CONFIG['cbam_position']}_Q{CONFIG['quality']}_epoch_{epoch+1}.pth"))
-
-    # 최종 가중치 저장 및 종료
-    final_path = os.path.join(CONFIG["save_dir"], f"ours_FINAL_{CONFIG['cbam_position']}_Q{CONFIG['quality']}_Ratio{int(CONFIG['target_ratio']*100)}.pth")
+        # --- REGULAR CHECKPOINT SAVING ---
+        if (epoch + 1) % CONFIG["save_interval"] == 0:
+            ckpt_path = os.path.join(CONFIG["save_dir"], f"ckpt_{CONFIG['cbam_position']}_ep{epoch+1}.pth")
+            torch.save(model.state_dict(), ckpt_path)
+            wandb.save(ckpt_path)
+            print(f"Checkpoint saved at Epoch {epoch+1}")
+            
+    final_path = os.path.join(CONFIG["save_dir"], f"final_{CONFIG['cbam_position']}_W{CONFIG['edge_weight']}.pth")
     torch.save(model.state_dict(), final_path)
+    wandb.save(final_path)
+    print("Training Completed and Final Model Saved.")
+                
     wandb.finish()
 
 if __name__ == "__main__":

@@ -49,14 +49,14 @@ class SmoothedEdgeLoss(nn.Module):
         return F.l1_loss(blur(e_pred, self.gauss), blur(e_tgt, self.gauss))
 
 class RateDistortionEdgeLoss(nn.Module):
-    def __init__(self, lmbda=0.0035, edge_weight=0.1, blur_ksize=7, blur_sigma=1.5, use_gray=True, mse_blur_sigma=0.0, mse_blur_ksize=None):
+    def __init__(self, lmbda=0.0035, edge_weight=0.1, blur_ksize=7, blur_sigma=1.5, use_gray=True, mse_blur_sigma=1.0, mse_blur_ksize=None):
         super().__init__()
         self.lmbda = lmbda
         self.edge_weight = edge_weight
         self.mse = nn.MSELoss()
         self.edge = SmoothedEdgeLoss(blur_ksize, blur_sigma, use_gray)
-
         self.mse_blur_sigma = float(mse_blur_sigma)
+        
         if self.mse_blur_sigma > 0:
             if mse_blur_ksize is None:
                 mse_blur_ksize = int(2 * math.ceil(3 * self.mse_blur_sigma) + 1)
@@ -69,52 +69,18 @@ class RateDistortionEdgeLoss(nn.Module):
         N, _, H, W = target.size()
         num_pixels = N * H * W
 
-        # 1. BPP
-        bpp = sum((torch.log(l).sum() / (-math.log(2) * num_pixels)) for l in out_net['likelihoods'].values())
+        # BPP 계산 시 정보이론에 맞게 log2 사용 및 보호
+        bpp = sum((torch.log2(l.clamp(min=1e-9)).sum() / (-num_pixels)) for l in out_net['likelihoods'].values())
 
-        # 2. MSE (Distortion)
         if self.mse_gauss is not None:
             mse_val = self.mse(blur(x_hat, self.mse_gauss), blur(target, self.mse_gauss))
         else:
             mse_val = self.mse(x_hat, target)
 
-        # 3. Smoothed Edge Loss
         edge_val = self.edge(x_hat, target)
 
         distortion_term = self.lmbda * (255 ** 2) * mse_val
         edge_term = self.edge_weight * edge_val
 
         loss = bpp + distortion_term + edge_term
-
         return loss, {'bpp': bpp.item(), 'distortion_term': distortion_term.item(), 'edge_term': edge_term.item()}
-    
-
-@torch.no_grad()
-def measure_loss_scales(model, loader, criterion, n_batches=20, device=None):
-    if device is None: device = next(model.parameters()).device
-    model.eval()
-
-    keys = ['bpp', 'distortion_term', 'edge_term']
-    acc = {k: 0.0 for k in keys}
-    n = 0
-
-    for i, (inp, tgt) in enumerate(loader):
-        if i >= n_batches: break
-        inp, tgt = inp.to(device), tgt.to(device)
-        out_net = model(inp)
-        _, logs = criterion(out_net, tgt)
-        for k in keys: acc[k] += abs(logs[k])
-        n += 1
-
-    model.train()
-    stats = {k: v / n for k, v in acc.items()}
-    return stats
-
-def calibrate_edge_weight(model, loader, criterion, target_ratio=0.1, n_batches=20, device=None, verbose=True):
-    stats = measure_loss_scales(model, loader, criterion, n_batches, device)
-
-    dist_m = stats['distortion_term']
-    edge_m = stats['edge_term'] / criterion.edge_weight  # 원래 쌩(?) 엣지 값 얻기 위해 나눔
-
-    new_weight = target_ratio * dist_m / edge_m
-    return float(new_weight)
