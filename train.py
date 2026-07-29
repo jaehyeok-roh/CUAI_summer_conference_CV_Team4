@@ -20,8 +20,8 @@ CONFIG = {
     "warmup_epochs": 5,          # 초반 압축기 보호용 가중치 동결 에포크
     "save_interval": 10,         # 정기 체크포인트 저장 주기
     "quality": 2,          
-    "edge_weight": 0.1,          # Baseline 3 훈련시 0.0 으로 세팅      
-    "mse_blur_sigma": 0.0,       # 어긋남 방지를 위한 MSE 블러 적용 (비활성화 시 0.0)
+    "edge_weight": 0.05,          # Baseline 3 훈련시 0.0 으로 세팅      
+    "mse_blur_sigma": 1.0,       # 어긋남 방지를 위한 MSE 블러 적용 (비활성화 시 0.0)
     "cbam_position": "decoder",  # Baseline 3 훈련시 "none" 으로 세팅
     "lr": 1e-4,                   
     "min_lr": 1e-6,               
