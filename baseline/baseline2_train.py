@@ -6,6 +6,7 @@ Baseline 2 (가우시안 JDC) 학습 스크립트
 밝기 복원에 실패하는 것(Domain Shift)을 보이는 것이 이 baseline 의 목적이다.
 
 Baseline_2.ipynb 의 GaussianNoiseDataset 을 train.py 와 같은 구조의 스크립트로 옮긴 것.
+Edge/TV loss 는 쓰지 않고 순수 RD(bpp + distortion) Loss 만 사용한다 (Baseline 3와 동일 원칙).
 
 실행:
     python3 baseline/baseline2_train.py
@@ -31,15 +32,15 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 from models import HyperpriorWithCBAM
 
 CONFIG = {
-    "train_path": "/content/lol_dataset/lol_dataset/our485",
-    "val_path": "/content/lol_dataset/lol_dataset/eval15",
+    "train_path": "LOL_Dataset/lol_dataset/our485",
+    "val_path": "LOL_Dataset/lol_dataset/eval15",
     "save_dir": "./checkpoints",
     "batch_size": 32,
     "num_workers": 4,
     "epochs": 300,
     "warmup_epochs": 5,
     "save_interval": 10,
-    "quality": 2,                # <- Q4 / Q6 / Q8 로 바꿔가며 학습
+    "quality": 2,                # <- Q2 / Q4 / Q6 / Q8 순서로 바꿔가며 학습
     "noise_sigma": 25 / 255.0,   # 가우시안 노이즈 세기 (표준적인 값)
     "lr": 1e-4,
     "min_lr": 1e-6,
@@ -151,9 +152,14 @@ def main():
 
     print(f"Setup Completed - Baseline 2 (AWGN) Q{CONFIG['quality']} on {device}")
 
+    has_cbam = any("cbam" in n for n, _ in model.named_parameters())
+
     for epoch in range(CONFIG["epochs"]):
         is_warmup = epoch < CONFIG["warmup_epochs"]
-        freeze_base_model(model, freeze=is_warmup)
+        # Baseline 2 는 cbam_position="none" 이라 CBAM 파라미터가 없음.
+        # warmup 로직은 CBAM만 학습하고 베이스 모델을 얼리는 용도이므로,
+        # CBAM이 없으면 얼릴 대상이 없으니 warmup을 건너뛴다 (안 그러면 전체가 얼어서 학습 불가).
+        freeze_base_model(model, freeze=is_warmup and has_cbam)
 
         # --- TRAIN ---
         model.train()
