@@ -16,6 +16,7 @@ CUAI 하계 컨퍼런스 CV 4팀
 이를 바탕으로 저희는 실제 저조도-정상조도 쌍으로 직접 학습하고, 여기에 **CBAM(어텐션 모듈)**과 **Edge/TV Loss(윤곽선 보존·아티팩트 억제 손실함수)**를 결합해, 기반 모델과 사실상 동일한 파라미터 크기를 유지하면서 실용적인 화질 개선을 달성했습니다.
 
 <br>
+---
 
 ### Problem Statement
 사전 학습된 기존 압축 모델(`bmshj2018-hyperprior`)에 극저조도 영상을 그대로 입력했을 때, 다음과 같은 문제가 발생함을 확인했습니다.
@@ -24,6 +25,8 @@ CUAI 하계 컨퍼런스 CV 4팀
 3. **노이즈로 인한 비트레이트 낭비:** 인공 노이즈 가정으로 학습한 모델은 신호로 보존해야 할 미세 구조까지 노이즈로 간주해 제거함 — 오히려 학습하지 않은 모델보다 성능이 낮음.
 
 <br>
+
+---
 
 ### Proposed Method
 
@@ -42,6 +45,8 @@ CUAI 하계 컨퍼런스 CV 4팀
 * `L = R_bpp + λ·255²·MSE + β·Edge Loss + γ·TV Loss`, β=20·γ=40 (그리드 서치로 결정)
 
 <br>
+
+---
 
 ### Results
 
@@ -74,6 +79,8 @@ CUAI 하계 컨퍼런스 CV 4팀
 
 <br>
 
+---
+
 ### Limitations & Future Work
 - **비트레이트 증가:** 동일 quality index에서 Baseline 3 대비 비트레이트가 40~48% 높음. Edge Loss가 고주파 성분을 유지하려다 엔트로피가 증가한 결과로 분석 — 압축률에 비례한 β·γ 동적 스케일링으로 완화 예정.
 - **PSNR 비단조성:** β·γ뿐 아니라 λ까지 전 구간 동일값(quality index 2 기준)으로 고정한 데서 기인 — quality index별 λ 재적용 재학습이 다음 단계로 설계됨.
@@ -81,6 +88,8 @@ CUAI 하계 컨퍼런스 CV 4팀
 - **단일 데이터셋 검증:** LOL eval15(15장)로만 검증했으며, SID·SMID 등 다른 저조도 데이터셋으로의 일반화는 미검증.
 
 <br>
+
+---
 
 ## 개발 환경 및 설치
 
@@ -97,11 +106,15 @@ pip install matplotlib numpy opencv-python
 
 <br>
 
+---
+
 ## Documentation
 - [Short Paper](docs/shortpaper.pdf)
 - [Poster](docs/poster.pdf)
 
 <br>
+
+---
 
 ## Team
 - 인선우 (전자전기공학부) — Data Preprocessing, Loss Function 커스텀, Evaluation & Visualization
@@ -109,8 +122,12 @@ pip install matplotlib numpy opencv-python
 
 <br>
 
+---
+
 ## License
 This project is licensed under the MIT License - see the LICENSE file for details.
+
+---
 
 ## Acknowledgments
 본 프로젝트는 중앙대학교 인공지능 학회 CUAI 9기 2026 하계 컨퍼런스의 일환으로 진행되었습니다.
