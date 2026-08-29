@@ -14,7 +14,6 @@ __pycache__/
 /images/
 *.jpg
 *.jpeg
-*.png
 
 # 4. IDE & OS
 .vscode/

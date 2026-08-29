@@ -32,7 +32,7 @@ CUAI 하계 컨퍼런스 CV 4팀
 * 인공 노이즈 합성이 아닌 실제 카메라로 촬영된 저조도-정상조도 페어로 직접 미세조정(fine-tuning)하여, 밝기 복원과 압축을 하나의 목적함수 안에서 동시 학습.
 
 #### 2. Architecture-Level: Attention Module (CBAM)
-![아키텍처](results/figures/architecture_diagram.png)
+![아키텍처](results/architecture_diagram.png)
 * CompressAI `bmshj2018_hyperprior`의 **디코더 입력단**(엔트로피 복호 직후)에 CBAM(채널 주의 + 공간 주의)을 잔차 형태로 결합: `ŷ' = ŷ + α·CBAM(ŷ)`
 * 학습 가능한 스칼라 α(초기값 0.01)로 warm-up하여 사전학습 가중치를 훼손하지 않음.
 * 인코더 위치도 검토했으나, 디코더 대비 유의미한 개선이 없고 출력이 불안정해져 디코더로 최종 결정.
