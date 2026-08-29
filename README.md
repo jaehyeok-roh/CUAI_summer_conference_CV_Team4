@@ -91,8 +91,8 @@ pip install matplotlib numpy opencv-python
 <br>
 
 ## 👥 Team
-인선우 (전자전기공학부) — Data Preprocessing, Loss Function 커스텀, Evaluation & Visualization
-노재혁 (AI학과) — CompressAI Architecture 분석, CBAM 결합, Training Pipeline 구축
+- 인선우 (전자전기공학부) — Data Preprocessing, Loss Function 커스텀, Evaluation & Visualization
+- 노재혁 (AI학과) — CompressAI Architecture 분석, CBAM 결합, Training Pipeline 구축
 
 <br>
 
