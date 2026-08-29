@@ -82,7 +82,7 @@ CUAI 하계 컨퍼런스 CV 4팀
 
 <br>
 
-## 🛠️ 개발 환경 및 설치 (Prerequisites & Installation)
+## 개발 환경 및 설치
 
 ```bash
 # 1. 가상환경 생성 및 활성화 (선택)
@@ -97,22 +97,22 @@ pip install matplotlib numpy opencv-python
 
 <br>
 
-## 📄 Documentation
+## Documentation
 - [Short Paper](docs/shortpaper.pdf)
 - [Poster](docs/poster.pdf)
 
 <br>
 
-## 👥 Team
+## Team
 - 인선우 (전자전기공학부) — Data Preprocessing, Loss Function 커스텀, Evaluation & Visualization
 - 노재혁 (AI학과) — CompressAI Architecture 분석, CBAM 결합, Training Pipeline 구축
 
 <br>
 
-## 📝 License
+## License
 This project is licensed under the MIT License - see the LICENSE file for details.
 
-## 🙏 Acknowledgments
+## Acknowledgments
 본 프로젝트는 중앙대학교 인공지능 학회 CUAI 9기 2026 하계 컨퍼런스의 일환으로 진행되었습니다.
 
 Base code is built upon [CompressAI](https://interdigitalinc.github.io/CompressAI/).
