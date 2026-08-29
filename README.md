@@ -16,6 +16,7 @@ CUAI 하계 컨퍼런스 CV 4팀
 이를 바탕으로 저희는 실제 저조도-정상조도 쌍으로 직접 학습하고, 여기에 **CBAM(어텐션 모듈)**과 **Edge/TV Loss(윤곽선 보존·아티팩트 억제 손실함수)**를 결합해, 기반 모델과 사실상 동일한 파라미터 크기를 유지하면서 실용적인 화질 개선을 달성했습니다.
 
 <br>
+
 ---
 
 ### Problem Statement
@@ -52,9 +53,9 @@ CUAI 하계 컨퍼런스 CV 4팀
 
 **정성적 비교**
 
-![정성적 비교](results/qualitative_comparison.png)
+<center>![정성적 비교](results/qualitative_comparison.png)</center>
 
-*왼쪽부터 원본(저조도) → Baseline 3 → Ours → 정답(High-Light)*
+<center> *왼쪽부터 원본(저조도) → Baseline 3 → Ours → 정답(High-Light)* </center>
 
 **정량적 비교 (RD Curve)**
 
