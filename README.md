@@ -53,7 +53,11 @@ CUAI 하계 컨퍼런스 CV 4팀
 
 **정성적 비교**
 
-!<div align="center">[정성적 비교](results/qualitative_comparison.png)</div>
+<div align="center">
+
+![정성적 비교](results/qualitative_comparison.png)
+
+</div>
 
 *<div align="center">왼쪽부터 원본(저조도) → Baseline 3 → Ours → 정답(High-Light)</div>*
 
