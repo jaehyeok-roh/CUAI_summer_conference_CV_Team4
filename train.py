@@ -20,8 +20,9 @@ CONFIG = {
     "warmup_epochs": 5,          # 초반 압축기 보호용 가중치 동결 에포크
     "save_interval": 10,         # 정기 체크포인트 저장 주기
     "quality": 2,          
-    "edge_weight": 0.05,          # Baseline 3 훈련시 0.0 으로 세팅      
-    "mse_blur_sigma": 1.0,       # 어긋남 방지를 위한 MSE 블러 적용 (비활성화 시 0.0)
+    "edge_weight": 10,          # Baseline 3 훈련시 0.0 으로 세팅      
+    "tv_weight": 40,
+    "mse_blur_sigma": 0.0,       # 어긋남 방지를 위한 MSE 블러 적용 (비활성화 시 0.0)
     "cbam_position": "decoder",  # Baseline 3 훈련시 "none" 으로 세팅
     "lr": 1e-4,                   
     "min_lr": 1e-6,               
@@ -70,7 +71,8 @@ def main():
     criterion = RateDistortionEdgeLoss(
         lmbda=CONFIG["lmbda"], 
         edge_weight=CONFIG["edge_weight"], 
-        mse_blur_sigma=CONFIG["mse_blur_sigma"]
+        mse_blur_sigma=CONFIG["mse_blur_sigma"],
+        tv_weight=CONFIG["tv_weight"],       # [신규 추가]
     ).to(device)
 
     # 스케줄러 & 옵티마이저 정의
@@ -91,7 +93,7 @@ def main():
         
         # --- TRAIN ---
         model.train()
-        train_loss, train_bpp, train_mse, train_edge = 0.0, 0.0, 0.0, 0.0
+        train_loss, train_bpp, train_mse, train_edge, train_tv = 0.0, 0.0, 0.0, 0.0, 0.0  # train_tv 추가
         
         for low_img, high_img in train_loader:
             low_img, high_img = low_img.to(device), high_img.to(device)
@@ -110,6 +112,7 @@ def main():
             train_bpp += logs['bpp']
             train_mse += logs['distortion_term']
             train_edge += logs['edge_term']
+            train_tv += logs['tv_term']  # TV term 누적
             
         scheduler.step()
         
@@ -151,8 +154,17 @@ def main():
         print(f"Epoch {mode_str} [{epoch+1:03d}/{CONFIG['epochs']}] Loss [T/V]: {avg_train_loss:.4f}/{avg_val_loss:.4f} | PSNR: {avg_psnr:.2f}")
         
         wandb.log({
-            "Train/Loss": avg_train_loss, "Train/BPP": train_bpp / steps, "Train/LR": optimizer.param_groups[0]['lr'],
-            "Val/Loss": avg_val_loss, "Val/BPP": val_bpp / v_steps, "Val/PSNR": avg_psnr, "Val/SSIM": val_ssim / v_steps, "Epoch": epoch + 1
+            "Train/Loss": avg_train_loss, 
+            "Train/BPP": train_bpp / steps, 
+            "Train/Edge_Term": train_edge / steps,  # Edge Loss 기록 추가
+            "Train/TV_Term": train_tv / steps,      # TV Loss 기록 추가
+            "Train/MSE_Term": train_mse / steps,    # MSE 항 기록 추가
+            "Train/LR": optimizer.param_groups[0]['lr'],
+            "Val/Loss": avg_val_loss, 
+            "Val/BPP": val_bpp / v_steps, 
+            "Val/PSNR": avg_psnr, 
+            "Val/SSIM": val_ssim / v_steps, 
+            "Epoch": epoch + 1
         })
 
         # --- REGULAR CHECKPOINT SAVING ---

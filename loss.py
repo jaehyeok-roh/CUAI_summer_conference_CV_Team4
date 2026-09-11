@@ -33,28 +33,49 @@ def blur(x, gk):
     pad = gk.shape[-1] // 2
     return F.conv2d(x, g, padding=pad, groups=C)
 
-class SmoothedEdgeLoss(nn.Module):
-    def __init__(self, blur_ksize=7, blur_sigma=1.5, use_gray=True, eps=1e-6):
+# --- Total Variation Loss 모듈 ---
+class TotalVariationLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        # 인접한 상하/좌우 픽셀 간의 차이 절대값 평균 (Checkerboard 억제 핵심)
+        tv_h = torch.abs(x[:, :, 1:, :] - x[:, :, :-1, :]).mean()
+        tv_w = torch.abs(x[:, :, :, 1:] - x[:, :, :, :-1]).mean()
+        return tv_h + tv_w
+
+# --- [수정됨] SmoothedEdgeLoss -> SharpEdgeLoss ---
+class SharpEdgeLoss(nn.Module):
+    def __init__(self, use_gray=True, eps=1e-6):
         super().__init__()
         kx, ky = make_sobel()
         self.register_buffer('sobel_x', kx)
         self.register_buffer('sobel_y', ky)
-        self.register_buffer('gauss', gaussian_kernel(blur_ksize, blur_sigma))
         self.use_gray = use_gray
         self.eps = eps
 
     def forward(self, pred, target):
+        # 엣지 크기(Magnitude) 추출
         e_pred = edge_magnitude(pred, self.sobel_x, self.sobel_y, self.eps, self.use_gray)
         e_tgt  = edge_magnitude(target, self.sobel_x, self.sobel_y, self.eps, self.use_gray)
-        return F.l1_loss(blur(e_pred, self.gauss), blur(e_tgt, self.gauss))
+        
+        # 가우시안 블러를 완전히 제거하고 픽셀 단위로 직접 L1 Loss 계산
+        return F.l1_loss(e_pred, e_tgt)
 
+# --- [수정됨] RateDistortionEdgeLoss 반영 ---
 class RateDistortionEdgeLoss(nn.Module):
-    def __init__(self, lmbda=0.0035, edge_weight=0.1, blur_ksize=7, blur_sigma=1.5, use_gray=True, mse_blur_sigma=1.0, mse_blur_ksize=None):
+    # edge 블러 관련 인자(blur_ksize, blur_sigma) 제거
+    def __init__(self, lmbda=0.0035, edge_weight=10.0, tv_weight=40.0, use_gray=True, mse_blur_sigma=0.0, mse_blur_ksize=None):
         super().__init__()
         self.lmbda = lmbda
         self.edge_weight = edge_weight
+        self.tv_weight = tv_weight
         self.mse = nn.MSELoss()
-        self.edge = SmoothedEdgeLoss(blur_ksize, blur_sigma, use_gray)
+        
+        # 교체된 SharpEdgeLoss 적용
+        self.edge = SharpEdgeLoss(use_gray)  
+        self.tv = TotalVariationLoss()  
+        
         self.mse_blur_sigma = float(mse_blur_sigma)
         
         if self.mse_blur_sigma > 0:
@@ -69,7 +90,7 @@ class RateDistortionEdgeLoss(nn.Module):
         N, _, H, W = target.size()
         num_pixels = N * H * W
 
-        # BPP 계산 시 정보이론에 맞게 log2 사용 및 보호
+        # BPP 계산
         bpp = sum((torch.log2(l.clamp(min=1e-9)).sum() / (-num_pixels)) for l in out_net['likelihoods'].values())
 
         if self.mse_gauss is not None:
@@ -78,9 +99,16 @@ class RateDistortionEdgeLoss(nn.Module):
             mse_val = self.mse(x_hat, target)
 
         edge_val = self.edge(x_hat, target)
+        tv_val = self.tv(x_hat)  
 
         distortion_term = self.lmbda * (255 ** 2) * mse_val
         edge_term = self.edge_weight * edge_val
+        tv_term = self.tv_weight * tv_val  
 
-        loss = bpp + distortion_term + edge_term
-        return loss, {'bpp': bpp.item(), 'distortion_term': distortion_term.item(), 'edge_term': edge_term.item()}
+        loss = bpp + distortion_term + edge_term + tv_term
+        return loss, {
+            'bpp': bpp.item(), 
+            'distortion_term': distortion_term.item(), 
+            'edge_term': edge_term.item(),
+            'tv_term': tv_term.item()
+        }
