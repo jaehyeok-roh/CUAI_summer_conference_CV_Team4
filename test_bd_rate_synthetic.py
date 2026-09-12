@@ -12,7 +12,7 @@ from PIL import Image
 from compressai.zoo import bmshj2018_hyperprior
 
 from baseline.cost import pipelines
-from baseline.joint_finetune import train as joint_train
+from baseline.joint_finetune import forward as joint_forward, train as joint_train
 from baseline.refiner import decode_all, finetune, score, to_uint8
 from baseline.two_stage import evaluate_pipeline
 from dataset import SyntheticLowLight
@@ -76,14 +76,23 @@ def test_refiner_steps():
 
 
 def test_joint_finetune_steps():
-    # 같이 학습하면 코덱 가중치가 바뀌고, --freeze_codec 이면 그대로여야 한다 (가중치 다운로드 없이)
+    # 같이 학습하면(STE 포함) 코덱 가중치가 바뀌고, --freeze_codec 이면 그대로여야 한다 (가중치 다운로드 없이)
     lows = [to_uint8(torch.rand(3, 64, 96) * 0.2) for _ in range(2)]
     highs = [to_uint8(torch.rand(3, 64, 96)) for _ in range(2)]
-    for freeze in (True, False):
+    for freeze, ste in ((True, False), (False, False), (False, True)):
         codec = bmshj2018_hyperprior(quality=1, pretrained=False)
         before = codec.g_a[0].weight.clone()
-        joint_train(codec, torch.nn.Conv2d(3, 3, 3, padding=1), lows, highs, 0.0018, iters=2, freeze_codec=freeze, crop=64, batch=2)
+        joint_train(codec, torch.nn.Conv2d(3, 3, 3, padding=1), lows, highs, 0.0018, iters=2, freeze_codec=freeze, ste=ste, crop=64, batch=2)
         assert torch.equal(codec.g_a[0].weight, before) == freeze
+
+    # STE 복원은 학습 모드에서도 평가 모드 복원(반올림)과 같아야 하고, gradient 는 인코더까지 흘러야 한다
+    codec = bmshj2018_hyperprior(quality=1, pretrained=False)
+    x = torch.rand(1, 3, 64, 64)
+    x_hat, _ = joint_forward(codec.train(), x, ste=True)
+    x_hat.mean().backward()
+    assert codec.g_a[0].weight.grad is not None
+    with torch.no_grad():
+        assert torch.allclose(x_hat, codec.eval()(x)["x_hat"], atol=1e-6)
 
 
 def test_compute_cost():
