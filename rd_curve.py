@@ -1,26 +1,29 @@
 """
 RD-Curve 생성 스크립트
 
-eval15 전체(15장)에 대해 아래 4개 모델을 동일한 조건(저조도 입력 -> 정상조도 타겟)으로
-평가하고 BPP-PSNR / BPP-SSIM 곡선을 그린다.
+eval15 전체(15장)에 대해 저조도 입력 -> 정상조도 타겟 조건으로 모델을 평가한다.
 
+RD 곡선(BPP-PSNR / BPP-SSIM)과 Ours vs Baseline 3 BD-rate:
   - Baseline 1 : 순정 CompressAI (학습 없음), quality 1~8
-  - Baseline 2 : 가우시안 노이즈(AWGN)로 학습, quality 2/4/6/8
+  - Baseline 2 : 가우시안 노이즈(AWGN)로 학습, quality 2
   - Baseline 3 : LOL 데이터 + 순수 RD Loss, quality 2/4/6/8
-  - Ours       : CBAM(decoder) + Edge Loss(20) + TV Loss(40), quality 2/4/6/8
+  - Ours       : CBAM(decoder) + Edge Loss + TV Loss, quality 2/4/6/8
+                 (Q4/6/8 은 quality 별 lmbda 로 재학습, edge/tv 가중치는 Q2 의 20/40 에 lmbda 비율을 곱함)
+Q2 비교 표(tables_q2.json): ablation, 합성 저조도 학습 데이터
 
 체크포인트 출처:
-  - Baseline 2/3 : 로컬에서 학습한 결과를 그대로 사용 (./checkpoints/final_*.pth)
-  - Ours         : wandb run 에서 받아 ./ckpt_cache 에 캐싱 (이미 캐싱돼 있으면 재다운로드 안 함)
-  - Baseline 1   : 별도 체크포인트 없음, torch hub 에서 compressai 사전학습 가중치만 받음
+  - Baseline 1 : 별도 체크포인트 없음, torch hub 에서 compressai 사전학습 가중치만 받음
+  - 나머지 전부 : wandb run 에서 받아 ./ckpt_cache 에 캐싱 (아직 끝나지 않은 run 은 건너뜀)
 
 실행:
-    python3 rd_curve.py
+    python3 rd_curve.py --eval_dir <LOL 경로>/eval15
 """
 
 import os
 import sys
 import json
+import argparse
+import functools
 
 # models.py 는 로컬에서 src/ 아래에 있다.
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
@@ -43,7 +46,6 @@ from torchmetrics.functional.image import structural_similarity_index_measure as
 CONFIG = {
     "eval_dir": "./LOL_Dataset/lol_dataset/eval15",
     "cache_dir": "./ckpt_cache",
-    "local_ckpt_dir": "./checkpoints",  # 로컬에서 직접 학습해서 나온 baseline2/3 체크포인트 위치
     "out_dir": "./results/rd_curve",
     "wandb_entity": "nojh4237-chung-ang-university",
     "wandb_project": "CUAI_summer_Project",
@@ -51,12 +53,37 @@ CONFIG = {
     "qualities": [2, 4, 6, 8],
 }
 
-# Ours: edge_weight=20, tv_weight=40 으로 통일된 4개 run
+# 평가할 run: (quality, wandb run 이름, wandb 체크포인트 파일, cbam 위치, 같은 이름 run 이 여럿일 때 구분할 config)
+def tagged(quality, tag, cbam):
+    """train.py --tag 로 학습한 run"""
+    return (quality, tag, f"checkpoints/final_{tag}.pth", cbam, {})
+
+
+B2_RUNS = {2: (2, "BASELINE2_AWGN_Q2", "checkpoints/final_B2_AWGN_Q2.pth", "none", {})}
+B3_RUNS = {
+    2: (2, "Model_NONE_Q2_Weight0", "checkpoints/final_none_Q2_W0.pth", "none", {"edge_weight": 0, "tv_weight": 0}),
+    4: tagged(4, "B3_Q4", "none"),
+    6: tagged(6, "B3_Q6", "none"),
+    8: tagged(8, "B3_Q8", "none"),
+}
 OURS_RUNS = {
-    2: "Model_DECODER_Q2_Weight20",
-    4: "Model_DECODER_Q4_Weight20",
-    6: "Model_DECODER_Q6_Weight20",
-    8: "Model_DECODER_Q8_Weight20",
+    2: (2, "Model_DECODER_Q2_Weight20", "checkpoints/final_decoder_W20.pth", "decoder", {"edge_weight": 20, "tv_weight": 40}),
+    4: tagged(4, "OURS_Q4", "decoder"),
+    6: tagged(6, "OURS_Q6", "decoder"),
+    8: tagged(8, "OURS_Q8", "decoder"),
+}
+ABLATION_RUNS = {
+    "Ours": OURS_RUNS[2],
+    "w/o CBAM": tagged(2, "ABL_noCBAM", "none"),
+    "w/o Edge": tagged(2, "ABL_noEdge", "decoder"),
+    "w/o TV": tagged(2, "ABL_noTV", "decoder"),
+}
+SYNTHETIC_RUNS = {
+    "Normal + AWGN (Baseline 2)": B2_RUNS[2],
+    "Dark": tagged(2, "SYN_dark", "none"),
+    "Dark + AWGN": tagged(2, "SYN_awgn", "none"),
+    "Dark + Poisson-Gaussian": tagged(2, "SYN_pg", "none"),
+    "Real LOL (Baseline 3)": B3_RUNS[2],
 }
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -122,24 +149,33 @@ def evaluate(model, pairs):
 
 
 # ---------------------------------------------------------------- 체크포인트
-def fetch_from_wandb(run_name, filename="checkpoints/final_decoder_W20.pth"):
-    """wandb run 에서 체크포인트를 내려받아 로컬 경로를 돌려준다."""
+@functools.lru_cache(maxsize=None)
+def project_runs():
     import wandb
+    return list(wandb.Api().runs(f"{CONFIG['wandb_entity']}/{CONFIG['wandb_project']}"))
+
+
+def fetch_from_wandb(run_name, filename, match):
+    """wandb run 에서 체크포인트를 내려받아 로컬 경로를 돌려준다. 조건에 맞는 끝난 run 이 없으면 None."""
 
     cache = os.path.join(CONFIG["cache_dir"], f"{run_name}.pth")
     if os.path.exists(cache):
         return cache
 
-    api = wandb.Api()
-    runs = api.runs(f"{CONFIG['wandb_entity']}/{CONFIG['wandb_project']}")
-    target = next((r for r in runs if r.name == run_name), None)
+    target = next((
+        r for r in project_runs()
+        if r.name == run_name and r.state == "finished"
+        and all(r.config.get(k) == v for k, v in match.items())
+        and filename in {f.name for f in r.files()}
+    ), None)
     if target is None:
-        raise RuntimeError(f"wandb 에서 run 을 찾지 못했습니다: {run_name}")
+        return None
 
     os.makedirs(CONFIG["cache_dir"], exist_ok=True)
     downloaded = target.file(filename).download(
         root=os.path.join(CONFIG["cache_dir"], run_name), replace=True
     )
+    downloaded.close()  # Windows 에서는 열린 파일을 옮길 수 없다
     os.replace(downloaded.name, cache)
     return cache
 
@@ -197,44 +233,20 @@ def measure_baseline1(pairs):
     return points
 
 
-def measure_baseline2(pairs):
-    """로컬에서 학습한 baseline/baseline2_train.py 결과 (./checkpoints/final_B2_AWGN_Q{q}.pth)."""
+def measure(label, runs, pairs):
+    """runs 의 체크포인트를 차례로 평가한다. 아직 끝나지 않은 run 은 건너뛴다."""
     points = []
-    for q in CONFIG["qualities"]:
-        ckpt = os.path.join(CONFIG["local_ckpt_dir"], f"final_B2_AWGN_Q{q}.pth")
-        model = HyperpriorWithCBAM(quality=q, cbam_position="none", pretrained=False)
+    for key, (q, run_name, filename, cbam, match) in runs.items():
+        ckpt = fetch_from_wandb(run_name, filename, match)
+        if ckpt is None:
+            print(f"  {label} [{key}] {run_name}: 끝난 run 이 없어 건너뜀")
+            continue
+        model = HyperpriorWithCBAM(quality=q, cbam_position=cbam, pretrained=False)
         load_state_dict_into(model, ckpt)
         m = evaluate(model, pairs)
-        m["quality"] = q
+        m.update(quality=q, row=str(key))
         points.append(m)
-        print(f"  Baseline2 q={q}: PSNR {m['psnr']:.2f} / SSIM {m['ssim']:.4f} / BPP {m['bpp']:.4f}")
-    return points
-
-
-def measure_baseline3(pairs):
-    """로컬에서 학습한 루트 train.py 결과 (edge=0, tv=0, cbam=none) -> ./checkpoints/final_none_Q{q}_W0.pth."""
-    points = []
-    for q in CONFIG["qualities"]:
-        ckpt = os.path.join(CONFIG["local_ckpt_dir"], f"final_none_Q{q}_W0.pth")
-        model = HyperpriorWithCBAM(quality=q, cbam_position="none", pretrained=False)
-        load_state_dict_into(model, ckpt)
-        m = evaluate(model, pairs)
-        m["quality"] = q
-        points.append(m)
-        print(f"  Baseline3 q={q}: PSNR {m['psnr']:.2f} / SSIM {m['ssim']:.4f} / BPP {m['bpp']:.4f}")
-    return points
-
-
-def measure_ours(pairs):
-    points = []
-    for q, run_name in OURS_RUNS.items():
-        ckpt = fetch_from_wandb(run_name)
-        model = HyperpriorWithCBAM(quality=q, cbam_position="decoder", pretrained=False)
-        load_state_dict_into(model, ckpt)
-        m = evaluate(model, pairs)
-        m["quality"] = q
-        points.append(m)
-        print(f"  Ours q={q}: PSNR {m['psnr']:.2f} / SSIM {m['ssim']:.4f} / BPP {m['bpp']:.4f}")
+        print(f"  {label} [{key}]: PSNR {m['psnr']:.2f} / SSIM {m['ssim']:.4f} / BPP {m['bpp']:.4f}")
     return points
 
 
@@ -244,7 +256,7 @@ SERIES_STYLE = {
     "Baseline 1 (No training)": {"color": "#888888", "marker": "o", "ls": "--"},
     "Baseline 2 (AWGN)":        {"color": "#2C7BB6", "marker": "s", "ls": "-"},
     "Baseline 3 (LOL, RD only)": {"color": "#FDAE61", "marker": "^", "ls": "-"},
-    "Ours (CBAM+Edge20+TV40)":  {"color": "#D7191C", "marker": "D", "ls": "-"},
+    "Ours (CBAM+Edge+TV)":      {"color": "#D7191C", "marker": "D", "ls": "-"},
 }
 
 
@@ -253,6 +265,8 @@ def plot_curve(results, metric, ylabel, out_path):
 
     for label, points in results.items():
         pts = sorted(points, key=lambda p: p["bpp"])
+        if not pts:
+            continue
         xs = [p["bpp"] for p in pts]
         ys = [p[metric] for p in pts]
         style = SERIES_STYLE[label]
@@ -317,14 +331,21 @@ def main():
     results["Baseline 1 (No training)"] = measure_baseline1(pairs)
 
     print("\n[2/4] Baseline 2 (AWGN 학습)")
-    results["Baseline 2 (AWGN)"] = measure_baseline2(pairs)
+    results["Baseline 2 (AWGN)"] = measure("Baseline2", B2_RUNS, pairs)
 
     print("\n[3/4] Baseline 3 (LOL + 순수 RD Loss)")
-    results["Baseline 3 (LOL, RD only)"] = measure_baseline3(pairs)
+    results["Baseline 3 (LOL, RD only)"] = measure("Baseline3", B3_RUNS, pairs)
 
-    print("\n[4/4] Ours (CBAM + Edge 20 + TV 40)")
-    results["Ours (CBAM+Edge20+TV40)"] = measure_ours(pairs)
+    print("\n[4/4] Ours (CBAM + Edge + TV)")
+    results["Ours (CBAM+Edge+TV)"] = measure("Ours", OURS_RUNS, pairs)
 
+    print()
+    print("[Q2 표] Ablation / 합성 저조도 학습 데이터")
+    tables = {"ablation": measure("Ablation", ABLATION_RUNS, pairs),
+              "synthetic": measure("Synthetic", SYNTHETIC_RUNS, pairs)}
+
+    with open(os.path.join(CONFIG["out_dir"], "tables_q2.json"), "w") as f:
+        json.dump(tables, f, indent=2, ensure_ascii=False)
     json_path = os.path.join(CONFIG["out_dir"], "rd_points.json")
     with open(json_path, "w") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
@@ -337,9 +358,18 @@ def main():
 
     print("\nBD-rate: Ours vs Baseline 3 (음수 = Ours 가 같은 품질을 더 적은 비트로 냄)")
     for metric in ("psnr", "ssim"):
-        rate = bd_rate(results["Baseline 3 (LOL, RD only)"], results["Ours (CBAM+Edge20+TV40)"], metric)
-        print(f"  {metric.upper()}: {rate:+.2f}%")
+        try:
+            rate = bd_rate(results["Baseline 3 (LOL, RD only)"], results["Ours (CBAM+Edge+TV)"], metric)
+            print(f"  {metric.upper()}: {rate:+.2f}%")
+        except ValueError as e:
+            print(f"  {metric.upper()}: 계산 불가 - {e}")
 
 
 if __name__ == "__main__":
+    # 문자열 CONFIG 키를 --키 값 으로 덮어쓸 수 있다 (예: --eval_dir /kaggle/input/.../eval15)
+    parser = argparse.ArgumentParser()
+    for key, value in CONFIG.items():
+        if isinstance(value, str):
+            parser.add_argument(f"--{key}", default=value)
+    CONFIG.update(vars(parser.parse_args()))
     main()
