@@ -9,6 +9,9 @@ import numpy as np
 import torch
 from PIL import Image
 
+from compressai.zoo import bmshj2018_hyperprior
+
+from baseline.two_stage import evaluate_pipeline
 from dataset import SyntheticLowLight
 from rd_curve import bd_rate
 
@@ -45,7 +48,20 @@ def test_synthetic_low_light():
             raise AssertionError("잘못된 mode 는 ValueError 가 나야 한다")
 
 
+def test_two_stage_pipelines():
+    # 64 의 배수가 아닌 크기로 패딩/크롭과 BPP 처리를 확인한다 (가중치 다운로드 없이)
+    pairs = [(torch.rand(3, 70, 100) * 0.2, torch.rand(3, 70, 100), "0.png")]
+    codec = bmshj2018_hyperprior(quality=1, pretrained=False).eval()
+    enhancer = torch.nn.Identity()
+    only = evaluate_pipeline(pairs, enhancer, None, "E")
+    assert only["bpp"] == 0
+    for order in ("EC", "CE"):
+        m = evaluate_pipeline(pairs, enhancer, codec, order)
+        assert m["bpp"] > 0 and np.isfinite(m["psnr"]) and 0 <= m["ssim"] <= 1
+
+
 if __name__ == "__main__":
     test_bd_rate()
     test_synthetic_low_light()
+    test_two_stage_pipelines()
     print("OK")
