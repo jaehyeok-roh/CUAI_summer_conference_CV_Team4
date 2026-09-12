@@ -28,10 +28,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # baseline/ (Ret
 from rd_curve import load_eval_pairs, pad_to_64, compute_psnr, compute_ssim, device
 
 
-def load_retinexformer(weights):
+def build_retinexformer():
     from RetinexFormer_arch import RetinexFormer
     # Retinexformer 레포 Options/RetinexFormer_LOL_v1.yml 의 network_g 설정
-    model = RetinexFormer(in_channels=3, out_channels=3, n_feat=40, stage=1, num_blocks=[1, 2, 2])
+    return RetinexFormer(in_channels=3, out_channels=3, n_feat=40, stage=1, num_blocks=[1, 2, 2])
+
+
+def load_retinexformer(weights):
+    model = build_retinexformer()
     state = torch.load(weights, map_location="cpu")
     model.load_state_dict(state.get("params", state))
     return model.eval().to(device)

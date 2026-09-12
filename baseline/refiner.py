@@ -48,25 +48,29 @@ def decode_all(codec, lows):
     return images, bpp / len(lows)
 
 
+def sample_batch(inputs, targets, crop, batch):
+    """inputs[k][i](k: quality, i: 이미지)와 targets[i] 의 같은 위치를 무작위로 자르고 뒤집은 배치. uint8 CPU 텐서 -> 0~1 float"""
+    xs, ys = [], []
+    for _ in range(batch):
+        k, i = random.randrange(len(inputs)), random.randrange(len(targets))
+        _, h, w = targets[i].shape
+        top, left = random.randint(0, h - crop), random.randint(0, w - crop)
+        x = inputs[k][i][:, top:top + crop, left:left + crop]
+        y = targets[i][:, top:top + crop, left:left + crop]
+        if random.random() < 0.5:
+            x, y = x.flip(-1), y.flip(-1)
+        xs.append(x)
+        ys.append(y)
+    return torch.stack(xs).to(device).float() / 255, torch.stack(ys).to(device).float() / 255
+
+
 def finetune(enhancer, inputs, targets, iters, crop=128, batch=8, lr=1e-4):
     """inputs[k][i](k: quality, i: 이미지) -> targets[i] 로 enhancer 를 L1 재학습한다. 입력은 모두 uint8 CPU 텐서."""
     optimizer = torch.optim.Adam(enhancer.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=iters, eta_min=1e-6)
     enhancer.train()
     for it in range(iters):
-        xs, ys = [], []
-        for _ in range(batch):
-            k, i = random.randrange(len(inputs)), random.randrange(len(targets))
-            _, h, w = targets[i].shape
-            top, left = random.randint(0, h - crop), random.randint(0, w - crop)
-            x = inputs[k][i][:, top:top + crop, left:left + crop]
-            y = targets[i][:, top:top + crop, left:left + crop]
-            if random.random() < 0.5:
-                x, y = x.flip(-1), y.flip(-1)
-            xs.append(x)
-            ys.append(y)
-        x = torch.stack(xs).to(device).float() / 255
-        y = torch.stack(ys).to(device).float() / 255
+        x, y = sample_batch(inputs, targets, crop, batch)
         loss = F.l1_loss(enhancer(x), y)
         optimizer.zero_grad()
         loss.backward()

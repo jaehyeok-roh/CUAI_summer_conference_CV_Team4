@@ -11,6 +11,8 @@ from PIL import Image
 
 from compressai.zoo import bmshj2018_hyperprior
 
+from baseline.cost import pipelines
+from baseline.joint_finetune import train as joint_train
 from baseline.refiner import decode_all, finetune, score, to_uint8
 from baseline.two_stage import evaluate_pipeline
 from dataset import SyntheticLowLight
@@ -73,9 +75,34 @@ def test_refiner_steps():
     assert score(images, highs) != (psnr, ssim)  # enhancer 없이 평가하면 결과가 달라야 한다
 
 
+def test_joint_finetune_steps():
+    # 같이 학습하면 코덱 가중치가 바뀌고, --freeze_codec 이면 그대로여야 한다 (가중치 다운로드 없이)
+    lows = [to_uint8(torch.rand(3, 64, 96) * 0.2) for _ in range(2)]
+    highs = [to_uint8(torch.rand(3, 64, 96)) for _ in range(2)]
+    for freeze in (True, False):
+        codec = bmshj2018_hyperprior(quality=1, pretrained=False)
+        before = codec.g_a[0].weight.clone()
+        joint_train(codec, torch.nn.Conv2d(3, 3, 3, padding=1), lows, highs, 0.0018, iters=2, freeze_codec=freeze, crop=64, batch=2)
+        assert torch.equal(codec.g_a[0].weight, before) == freeze
+
+
+def test_compute_cost():
+    # Retinexformer 대신 3x3 conv 로: 파이프라인별로 CBAM·향상 모델 비용이 올바른 쪽에 더해지는지 확인한다
+    rows = pipelines(1, torch.nn.Conv2d(3, 3, 3, padding=1), h=64, w=96, runs=1)
+    std, ec, ce, ours = rows["Standard codec"], rows["Enhance -> Compress"], rows["Compress -> Enhance"], rows["Ours"]
+    M = 192  # quality 1~5 의 latent 채널 수
+    assert ours["receiver"]["params"] - std["receiver"]["params"] == 2 * M * (M // 16) + 2 * 7 * 7 + 1
+    assert ours["edge"]["flops"] == std["edge"]["flops"]
+    assert ec["edge"]["flops"] - std["edge"]["flops"] == 3 * 3 * 3 * 3 * 64 * 96
+    assert ce["receiver"]["params"] - std["receiver"]["params"] == 3 * 3 * 3 * 3 + 3
+    assert ec["receiver"] == std["receiver"]
+
+
 if __name__ == "__main__":
     test_bd_rate()
     test_synthetic_low_light()
     test_two_stage_pipelines()
     test_refiner_steps()
+    test_joint_finetune_steps()
+    test_compute_cost()
     print("OK")
