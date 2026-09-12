@@ -11,6 +11,7 @@ from PIL import Image
 
 from compressai.zoo import bmshj2018_hyperprior
 
+from baseline.refiner import decode_all, finetune, score, to_uint8
 from baseline.two_stage import evaluate_pipeline
 from dataset import SyntheticLowLight
 from rd_curve import bd_rate
@@ -60,8 +61,21 @@ def test_two_stage_pipelines():
         assert m["bpp"] > 0 and np.isfinite(m["psnr"]) and 0 <= m["ssim"] <= 1
 
 
+def test_refiner_steps():
+    # 복원 -> 재학습 -> 평가가 64 의 배수가 아닌 크기에서도 돌아가는지 확인한다 (가중치 다운로드 없이)
+    lows = [torch.rand(3, 70, 100) * 0.2 for _ in range(2)]
+    highs = [torch.rand(3, 70, 100) for _ in range(2)]
+    images, bpp = decode_all(bmshj2018_hyperprior(quality=1, pretrained=False).eval(), lows)
+    assert images[0].dtype == torch.uint8 and images[0].shape == (3, 70, 100) and bpp > 0
+    enhancer = finetune(torch.nn.Conv2d(3, 3, 3, padding=1), [images], [to_uint8(h) for h in highs], iters=2, crop=32, batch=2)
+    psnr, ssim = score(images, highs, enhancer)
+    assert np.isfinite(psnr) and 0 <= ssim <= 1
+    assert score(images, highs) != (psnr, ssim)  # enhancer 없이 평가하면 결과가 달라야 한다
+
+
 if __name__ == "__main__":
     test_bd_rate()
     test_synthetic_low_light()
     test_two_stage_pipelines()
+    test_refiner_steps()
     print("OK")
