@@ -1,11 +1,13 @@
 import os
+import random
+import argparse
 import torch
 import torch.optim as optim
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 import wandb
 
-from dataset import LOLDataset
+from dataset import LOLDataset, SyntheticLowLight
 from models import HyperpriorWithCBAM
 from loss import RateDistortionEdgeLoss
 
@@ -20,14 +22,17 @@ CONFIG = {
     "warmup_epochs": 5,          # 초반 압축기 보호용 가중치 동결 에포크
     "save_interval": 10,         # 정기 체크포인트 저장 주기
     "quality": 2,          
-    "edge_weight": 10,          # Baseline 3 훈련시 0.0 으로 세팅      
-    "tv_weight": 40,
+    "edge_weight": 10.0,          # Baseline 3 훈련시 0.0 으로 세팅      
+    "tv_weight": 40.0,
     "mse_blur_sigma": 0.0,       # 어긋남 방지를 위한 MSE 블러 적용 (비활성화 시 0.0)
     "cbam_position": "decoder",  # Baseline 3 훈련시 "none" 으로 세팅
     "lr": 1e-4,                   
     "min_lr": 1e-6,               
     "aux_lr": 1e-3,              # aux_lr 은 스케줄러 없이 1e-3 으로 고정
     "lmbda": 0.0035,
+    "seed": 0,
+    "tag": "",                   # 실행 이름. 지정하면 wandb 이름과 체크포인트 파일명에 사용
+    "synthetic": "",             # "" = 실제 LOL 쌍, dark | dark_awgn | dark_pg = high 이미지로 저조도 입력 합성
 }
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -47,15 +52,21 @@ def freeze_base_model(model, freeze=True):
 
 def main():
     os.makedirs(CONFIG["save_dir"], exist_ok=True)
+    random.seed(CONFIG["seed"])
+    torch.manual_seed(CONFIG["seed"])  # DataLoader 워커의 random/torch 시드도 여기서 파생된다
+    run_name = CONFIG["tag"] or f"Model_{CONFIG['cbam_position'].upper()}_Q{CONFIG['quality']}_Weight{CONFIG['edge_weight']:g}"
     
     wandb.init(
         entity="nojh4237-chung-ang-university",
         project="CUAI_summer_Project",
-        name=f"Model_{CONFIG['cbam_position'].upper()}_Q{CONFIG['quality']}_Weight{CONFIG['edge_weight']}",
+        name=run_name,
         config=CONFIG
     )
 
-    train_dataset = LOLDataset(root_dir=CONFIG["train_path"], crop_size=256, is_train=True)
+    if CONFIG["synthetic"]:
+        train_dataset = SyntheticLowLight(root_dir=CONFIG["train_path"], mode=CONFIG["synthetic"], crop_size=256)
+    else:
+        train_dataset = LOLDataset(root_dir=CONFIG["train_path"], crop_size=256, is_train=True)
     val_dataset = LOLDataset(root_dir=CONFIG["val_path"], crop_size=256, is_train=False)
     
     train_loader = DataLoader(train_dataset, batch_size=CONFIG["batch_size"], shuffle=True, num_workers=CONFIG["num_workers"], pin_memory=True)
@@ -88,7 +99,8 @@ def main():
     print(f"Setup Completed - Starting Run on {device} (Limit Epochs: {CONFIG['epochs']})")
 
     for epoch in range(CONFIG["epochs"]):
-        is_warmup = epoch < CONFIG["warmup_epochs"]
+        # CBAM 이 없으면 동결 시 학습할 파라미터가 없어 backward 에서 에러가 나므로 warmup 을 건너뛴다
+        is_warmup = epoch < CONFIG["warmup_epochs"] and model.cbam is not None
         freeze_base_model(model, freeze=is_warmup)
         
         # --- TRAIN ---
@@ -169,12 +181,12 @@ def main():
 
         # --- REGULAR CHECKPOINT SAVING ---
         if (epoch + 1) % CONFIG["save_interval"] == 0:
-            ckpt_path = os.path.join(CONFIG["save_dir"], f"ckpt_{CONFIG['cbam_position']}_ep{epoch+1}.pth")
+            ckpt_path = os.path.join(CONFIG["save_dir"], f"ckpt_{run_name}_ep{epoch+1}.pth")
             torch.save(model.state_dict(), ckpt_path)
             wandb.save(ckpt_path)
             print(f"Checkpoint saved at Epoch {epoch+1}")
             
-    final_path = os.path.join(CONFIG["save_dir"], f"final_{CONFIG['cbam_position']}_W{CONFIG['edge_weight']}.pth")
+    final_path = os.path.join(CONFIG["save_dir"], f"final_{run_name}.pth")
     torch.save(model.state_dict(), final_path)
     wandb.save(final_path)
     print("Training Completed and Final Model Saved.")
@@ -182,4 +194,9 @@ def main():
     wandb.finish()
 
 if __name__ == "__main__":
+    # 모든 CONFIG 키를 --키 값 으로 덮어쓸 수 있다 (예: --quality 4 --lmbda 0.013 --tag OURS_Q4)
+    parser = argparse.ArgumentParser()
+    for key, value in CONFIG.items():
+        parser.add_argument(f"--{key}", type=type(value), default=value)
+    CONFIG.update(vars(parser.parse_args()))
     main()

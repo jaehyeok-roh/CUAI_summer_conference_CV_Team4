@@ -25,6 +25,7 @@ import json
 # models.py 는 로컬에서 src/ 아래에 있다.
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
@@ -279,6 +280,31 @@ def plot_curve(results, metric, ylabel, out_path):
     print(f"저장됨: {out_path}")
 
 
+# ---------------------------------------------------------------- BD-rate
+def bd_rate(anchor, test, metric):
+    """Bjøntegaard delta rate (%). 같은 metric 품질을 내는 데 test 가 anchor 보다 비트를 몇 % 더 쓰는지.
+
+    음수면 test 가 더 적은 비트를 쓴다. anchor/test 는 "bpp" 와 metric 키를 가진 점 리스트이고,
+    곡선마다 점이 4개 이상 필요하다 (3차 다항식 피팅).
+    """
+    def fit(points):
+        if len(points) < 4:
+            raise ValueError(f"BD-rate 는 곡선마다 점이 4개 이상 필요합니다 (현재 {len(points)}개)")
+        pts = sorted(points, key=lambda p: p["bpp"])
+        qual = np.array([p[metric] for p in pts])
+        if np.any(np.diff(qual) <= 0):
+            print(f"  경고: {metric} 가 bpp 에 따라 단조 증가하지 않아 BD-rate 를 신뢰하기 어렵습니다.")
+        return qual, np.polyint(np.polyfit(qual, np.log([p["bpp"] for p in pts]), 3))
+
+    q1, i1 = fit(anchor)
+    q2, i2 = fit(test)
+    lo, hi = max(q1.min(), q2.min()), min(q1.max(), q2.max())
+    if hi <= lo:
+        raise ValueError(f"두 곡선의 {metric} 구간이 겹치지 않아 BD-rate 를 계산할 수 없습니다.")
+    avg_diff = ((np.polyval(i2, hi) - np.polyval(i2, lo)) - (np.polyval(i1, hi) - np.polyval(i1, lo))) / (hi - lo)
+    return (np.exp(avg_diff) - 1) * 100
+
+
 # ---------------------------------------------------------------- 메인
 def main():
     os.makedirs(CONFIG["out_dir"], exist_ok=True)
@@ -308,6 +334,11 @@ def main():
                os.path.join(CONFIG["out_dir"], "rd_curve_psnr.png"))
     plot_curve(results, "ssim", "SSIM",
                os.path.join(CONFIG["out_dir"], "rd_curve_ssim.png"))
+
+    print("\nBD-rate: Ours vs Baseline 3 (음수 = Ours 가 같은 품질을 더 적은 비트로 냄)")
+    for metric in ("psnr", "ssim"):
+        rate = bd_rate(results["Baseline 3 (LOL, RD only)"], results["Ours (CBAM+Edge20+TV40)"], metric)
+        print(f"  {metric.upper()}: {rate:+.2f}%")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,7 @@
 import os
+import math
 import random
+import numpy as np
 import torch
 from torch.utils.data import Dataset
 from PIL import Image
@@ -49,3 +51,39 @@ class LOLDataset(Dataset):
                 high_img = TF.pad(high_img, (0, 0, pad_w, pad_h), padding_mode='reflect')
 
         return TF.to_tensor(low_img), TF.to_tensor(high_img)
+
+
+class SyntheticLowLight(LOLDataset):
+    """정상조도(high) 이미지로 저조도 입력을 합성한다. low 이미지는 어둡게 할 정도를 정하는 데만 쓴다.
+
+    mode:
+      dark      : 노출만 낮춘다 (노이즈 없음)
+      dark_pg   : 노출을 낮추고 신호에 비례하는 Poisson-Gaussian 노이즈를 더한다
+                  (노이즈 레벨 샘플링은 Brooks et al., CVPR 2019 "Unprocessing Images for Learned Raw Denoising")
+      dark_awgn : 노출을 낮추고 dark_pg 와 이미지 평균 분산이 같은 AWGN 을 더한다 (노이즈 '형태'만 다름)
+    """
+    MODES = ("dark", "dark_awgn", "dark_pg")
+
+    def __init__(self, root_dir, mode, crop_size=256):
+        super().__init__(root_dir, crop_size, is_train=True)
+        if mode not in self.MODES:
+            raise ValueError(f"mode 는 {self.MODES} 중 하나여야 합니다: {mode}")
+        self.mode = mode
+        # 실제 LOL 쌍의 밝기 비율(low 평균 / high 평균)을 이미지별로 그대로 쓴다
+        self.ratios = [
+            np.asarray(Image.open(os.path.join(self.low_dir, n)).convert('RGB'), dtype=np.float64).mean()
+            / np.asarray(Image.open(os.path.join(self.high_dir, n)).convert('RGB'), dtype=np.float64).mean()
+            for n in self.image_names
+        ]
+
+    def __getitem__(self, idx):
+        _, high = super().__getitem__(idx)  # LOLDataset 과 같은 크롭/반전이 적용된 high
+        # ponytail: sRGB 감마를 2.2 거듭제곱으로 근사, 정확한 sRGB 곡선이 필요하면 교체
+        lin = (high * self.ratios[idx]) ** 2.2
+        if self.mode != "dark":
+            log_shot = random.uniform(math.log(1e-4), math.log(0.012))
+            shot = math.exp(log_shot)
+            read = math.exp(2.18 * log_shot + 1.20 + random.gauss(0, 0.26))
+            var = lin * shot + read if self.mode == "dark_pg" else lin.mean() * shot + read
+            lin = lin + torch.randn_like(lin) * var.sqrt()
+        return lin.clamp(0, 1) ** (1 / 2.2), high
