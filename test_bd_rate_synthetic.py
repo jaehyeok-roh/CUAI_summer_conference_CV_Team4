@@ -12,6 +12,7 @@ from PIL import Image
 from compressai.zoo import bmshj2018_hyperprior
 
 from baseline.cost import pipelines
+from baseline.eval_all import codec_then, report as eval_report
 from baseline.joint_finetune import forward as joint_forward, train as joint_train
 from baseline.refiner import decode_all, finetune, score, to_uint8
 from baseline.two_stage import evaluate_pipeline
@@ -107,6 +108,19 @@ def test_compute_cost():
     assert ec["receiver"] == std["receiver"]
 
 
+def test_eval_all():
+    # 출력이 8비트 값이고, BD 와 부호 검정이 알려진 차이를 그대로 되찾는지 확인한다 (가중치 다운로드 없이)
+    run = codec_then(bmshj2018_hyperprior(quality=1, pretrained=False).eval(), torch.nn.Conv2d(3, 3, 3, padding=1).eval())
+    y, bpp = run(torch.rand(3, 70, 100) * 0.2)
+    assert y.shape == (3, 70, 100) and bpp > 0 and torch.allclose(y * 255, (y * 255).round(), atol=1e-4)
+
+    def curve(dp):  # 5장 x 4품질. 같은 bpp 에서 PSNR 이 dp, SSIM 이 dp/50 만큼 높다
+        return {q: [[f"{i}.png", 0.05 * (q + 1) * (1 + i / 10), 19 + q + i / 10 + dp, 0.6 + 0.05 * q + dp / 50] for i in range(5)] for q in range(4)}
+    entry = eval_report({"Control (codec frozen)": curve(0.0), "Ours: v2 (STE)": curve(0.5)})[("Ours: v2 (STE)", "Control (codec frozen)")]
+    assert abs(entry["bd_psnr"] - 0.5) < 1e-9 and abs(entry["bd_ssim"] - 0.01) < 1e-9
+    assert entry["bd_rate_ssim"] < 0 and entry["wins_PSNR"] == (5, 5)
+
+
 if __name__ == "__main__":
     test_bd_rate()
     test_synthetic_low_light()
@@ -114,4 +128,5 @@ if __name__ == "__main__":
     test_refiner_steps()
     test_joint_finetune_steps()
     test_compute_cost()
+    test_eval_all()
     print("OK")
