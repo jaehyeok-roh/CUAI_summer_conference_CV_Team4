@@ -12,6 +12,7 @@ from PIL import Image
 from compressai.zoo import bmshj2018_hyperprior
 
 from baseline.cost import pipelines
+from baseline.edge_finetune import train as edge_train
 from baseline.eval_all import codec_then, report as eval_report
 from baseline.joint_finetune import forward as joint_forward, train as joint_train
 from baseline.refiner import decode_all, finetune, score, to_uint8
@@ -96,6 +97,48 @@ def test_joint_finetune_steps():
         assert torch.allclose(x_hat, codec.eval()(x)["x_hat"], atol=1e-6)
 
 
+def test_edge_finetune_steps():
+    # --train/--target 에 따라 향상 모델(IAT 대신 3x3 conv)과 코덱 중 학습하는 쪽만 바뀌어야 한다 (가중치 다운로드 없이)
+    lows = [to_uint8(torch.rand(3, 64, 96) * 0.2) for _ in range(2)]
+    highs = [to_uint8(torch.rand(3, 64, 96)) for _ in range(2)]
+    for part, target in (("both", "gt"), ("codec", "gt"), ("enhancer", "gt"), ("codec", "input"), ("both", "teacher")):
+        enhancer, codec = torch.nn.Conv2d(3, 3, 3, padding=1), bmshj2018_hyperprior(quality=1, pretrained=False)
+        before = enhancer.weight.clone(), codec.g_a[0].weight.clone()
+        edge_train(enhancer, codec, lows, highs, 0.0018, iters=2, part=part, target=target, crop=64, batch=2)
+        assert torch.equal(enhancer.weight, before[0]) == (part == "codec")
+        assert torch.equal(codec.g_a[0].weight, before[1]) == (part == "enhancer")
+
+    # --source gt 대조군은 향상 모델을 거치지 않고 정답 영상으로 코덱만 맞춰야 한다
+    class NoEnhancer(torch.nn.Module):
+        def forward(self, x):
+            raise AssertionError("source=gt 인데 향상 모델을 거쳤다")
+    codec = bmshj2018_hyperprior(quality=1, pretrained=False)
+    before = codec.g_a[0].weight.clone()
+    edge_train(NoEnhancer(), codec, lows, highs, 0.0018, iters=2, part="codec", target="input", source="gt", crop=64, batch=2)
+    assert not torch.equal(codec.g_a[0].weight, before)
+
+    # --train enhancer_local 은 향상 모델의 지역 분기만 바꾸고 전역 분기와 코덱은 그대로 둬야 한다
+    class TwoBranch(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.net = torch.nn.Module()
+            self.net.local_net, self.net.global_net = torch.nn.Conv2d(3, 3, 3, padding=1), torch.nn.Conv2d(3, 3, 1)
+
+        def forward(self, x):
+            return self.net.global_net(self.net.local_net(x))
+    enhancer, codec = TwoBranch(), bmshj2018_hyperprior(quality=1, pretrained=False)
+    before = [m.weight.clone() for m in (enhancer.net.local_net, enhancer.net.global_net, codec.g_a[0])]
+    edge_train(enhancer, codec, lows, highs, 0.0018, iters=2, part="enhancer_local", crop=64, batch=2)
+    assert not torch.equal(enhancer.net.local_net.weight, before[0])
+    assert torch.equal(enhancer.net.global_net.weight, before[1]) and torch.equal(codec.g_a[0].weight, before[2])
+
+    # 코덱을 고정해도(train 모드) bpp 만으로 향상 모델에 gradient 가 가야 한다: IAT 가 압축하기 좋은 출력을 배우는 경로
+    enhancer, codec = torch.nn.Conv2d(3, 3, 3, padding=1), bmshj2018_hyperprior(quality=1, pretrained=False).train().requires_grad_(False)
+    _, likelihoods = joint_forward(codec, enhancer(torch.rand(1, 3, 64, 64)), ste=True)
+    sum(torch.log2(l).sum() for l in likelihoods.values()).backward()
+    assert enhancer.weight.grad.abs().sum() > 0
+
+
 def test_compute_cost():
     # Retinexformer 대신 3x3 conv 로: 파이프라인별로 CBAM·향상 모델 비용이 올바른 쪽에 더해지는지 확인한다
     rows = pipelines(1, torch.nn.Conv2d(3, 3, 3, padding=1), h=64, w=96, runs=1)
@@ -127,6 +170,7 @@ if __name__ == "__main__":
     test_two_stage_pipelines()
     test_refiner_steps()
     test_joint_finetune_steps()
+    test_edge_finetune_steps()
     test_compute_cost()
     test_eval_all()
     print("OK")
