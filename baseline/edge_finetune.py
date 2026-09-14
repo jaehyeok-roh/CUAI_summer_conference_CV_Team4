@@ -78,9 +78,12 @@ class ZeroDCE(torch.nn.Module):
     (공식 추론은 큰 영상에서 속도 때문에 12 배 줄이지만, 그러려면 영상 크기가 12 의 배수여야 해서 크롭 학습과 맞지 않는다)"""
     def __init__(self, zerodce_dir):
         super().__init__()
-        sys.path.insert(0, zerodce_dir)
-        from model import enhance_net_nopool
-        self.net = enhance_net_nopool(1)
+        import importlib.util
+        # 파일 이름이 model.py 라 IAT 의 model 패키지와 이름이 겹친다. 같은 프로세스에서 둘 다 쓰도록 경로로 불러온다
+        spec = importlib.util.spec_from_file_location("zerodce_model", os.path.join(zerodce_dir, "model.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.net = module.enhance_net_nopool(1)
         self.net.load_state_dict(torch.load(os.path.join(zerodce_dir, "snapshots_Zero_DCE++", "Epoch99.pth"), map_location="cpu"))
 
     def forward(self, x):
