@@ -16,6 +16,8 @@ B: 엣지의 경량 향상 모델(IAT) + 기존 코덱을 미세조정한다.
                       톤은 IAT 를 따르고 구조는 잡음 없는 정답이라, 코덱이 향상으로 커진 잡음을 복원 대상에서 빼도록 배운다
   --source gt       : 코덱 입력을 IAT 출력 대신 정상조도 정답 영상으로 둔다 (--train codec --target input 전용).
                       "향상된 영상에 맞춰서" 비트가 주는지, "LOL 장면에 맞춰서" 주는지 가르는 대조군
+  --enhancer zerodce : IAT 대신 Zero-DCE++ (쌍 데이터 없이 학습한 초경량 향상 모델) 를 엣지 향상 모델로 쓴다.
+                       결과가 IAT·LOL 학습 모델에만 해당하는지 확인하는 용도 (체크포인트·결과 이름에 _zerodce)
 
 지금까지 LOL-v1 결과:
   정답 목표: 사전학습 IAT -> Compress 보다 비트가 늘고 PSNR 이 1.7~2.3 dB 떨어졌다(SSIM 은 비슷). 출력 밝기가 정답보다 5.7% 밝았지만
@@ -27,7 +29,8 @@ B: 엣지의 경량 향상 모델(IAT) + 기존 코덱을 미세조정한다.
 
 평가는 eval_all.py 와 같은 경로(IAT 출력 8비트 -> 코덱 -> 8비트)이고, 결과는 eval_all.py 형식({이름: {품질: [[이미지, bpp, PSNR, SSIM], ...]}})이다.
 
-실행 (레포 루트에서, IAT 저장소 https://github.com/cuiziteng/Illumination-Adaptive-Transformer 의 IAT_enhance 폴더와 timm 필요):
+실행 (레포 루트에서, IAT 저장소 https://github.com/cuiziteng/Illumination-Adaptive-Transformer 의 IAT_enhance 폴더와 timm 필요.
+Zero-DCE++ 는 https://github.com/Li-Chongyi/Zero-DCE_extension 의 Zero-DCE++ 폴더):
     python baseline/edge_finetune.py --train_dir <LOL 경로>/our485 --eval_dir <LOL 경로>/eval15 --iat_dir <IAT>/IAT_enhance --train codec --target input --qualities 1 3 5
 """
 import argparse
@@ -66,6 +69,20 @@ class IAT(torch.nn.Module):
 
     def forward(self, x):
         return self.net(x)[2]
+
+
+class ZeroDCE(torch.nn.Module):
+    """Zero-DCE++ (TPAMI 2021) 공식 가중치 snapshots_Zero_DCE++/Epoch99.pth. 0~1 입력, 곡선 추정은 원래 해상도(scale_factor 1)에서 한다
+    (공식 추론은 큰 영상에서 속도 때문에 12 배 줄이지만, 그러려면 영상 크기가 12 의 배수여야 해서 크롭 학습과 맞지 않는다)"""
+    def __init__(self, zerodce_dir):
+        super().__init__()
+        sys.path.insert(0, zerodce_dir)
+        from model import enhance_net_nopool
+        self.net = enhance_net_nopool(1)
+        self.net.load_state_dict(torch.load(os.path.join(zerodce_dir, "snapshots_Zero_DCE++", "Epoch99.pth"), map_location="cpu"))
+
+    def forward(self, x):
+        return self.net(x)[0]
 
 
 def align_tone_batch(src, ref):
@@ -132,6 +149,8 @@ def main():
     parser.add_argument("--train_dir", default="./LOL_Dataset/lol_dataset/our485")
     parser.add_argument("--eval_dir", default="./LOL_Dataset/lol_dataset/eval15")
     parser.add_argument("--iat_dir", default="./Illumination-Adaptive-Transformer/IAT_enhance")
+    parser.add_argument("--enhancer", choices=("iat", "zerodce"), default="iat")
+    parser.add_argument("--zerodce_dir", default="./Zero-DCE_extension/Zero-DCE++")
     parser.add_argument("--train", choices=LABELS, default="both")
     parser.add_argument("--target", choices=TARGETS, default="gt")
     parser.add_argument("--source", choices=("low", "gt"), default="low")
@@ -144,19 +163,24 @@ def main():
         parser.error("--target input/aligned 는 --train codec 에서만 쓴다 (향상 모델까지 학습하면 목표가 같이 움직인다. 그럴 땐 --target teacher)")
     if args.source == "gt" and (args.train, args.target) != ("codec", "input"):
         parser.error("--source gt 는 --train codec --target input 에서만 쓴다 (정답 영상 도메인에 코덱만 맞추는 대조군)")
+    if args.enhancer == "zerodce" and args.train == "enhancer_local":
+        parser.error("--train enhancer_local 은 지역·전역 분기가 있는 IAT 전용이다")
 
     train_pairs, test = load_eval_pairs(args.train_dir), load_eval_pairs(args.eval_dir)
     lows, highs = [to_uint8(low) for low, _, _ in train_pairs], [to_uint8(high) for _, high, _ in train_pairs]
     label = LABELS[args.train] + TARGETS[args.target] + (" (adapted on GT images)" if args.source == "gt" else "")
+    if args.enhancer == "zerodce":
+        label = label.replace("IAT", "Zero-DCE++")
     os.makedirs(args.out_dir, exist_ok=True)
     for quality in args.qualities:
         random.seed(args.seed)
         torch.manual_seed(args.seed)
         codec = bmshj2018_hyperprior(quality=quality, pretrained=True).to(device)
-        enhancer = IAT(args.iat_dir).to(device)
+        enhancer = (IAT(args.iat_dir) if args.enhancer == "iat" else ZeroDCE(args.zerodce_dir)).to(device)
         print(f"[q={quality}] {label} 학습 ({args.iters} iters, lambda {LAMBDAS[quality]})", flush=True)
         train(enhancer, codec, lows, highs, LAMBDAS[quality], args.iters, args.train, args.target, args.source)
-        name = f"edge_{args.train}" + ("" if args.target == "gt" else f"_{args.target}") + ("_gtsrc" if args.source == "gt" else "") + (f"_seed{args.seed}" if args.seed else "") + f"_q{quality}"
+        name = (f"edge_{args.train}" + ("" if args.target == "gt" else f"_{args.target}") + ("_gtsrc" if args.source == "gt" else "")
+                + ("" if args.enhancer == "iat" else f"_{args.enhancer}") + (f"_seed{args.seed}" if args.seed else "") + f"_q{quality}")
         torch.save({"codec": codec.state_dict(), "enhancer": enhancer.state_dict()}, os.path.join(args.out_dir, f"{name}.pth"))
         with open(os.path.join(args.out_dir, f"{name}.json"), "w") as f:  # 품질마다 따로 저장해 세션이 끊겨도 끝난 것은 남긴다
             json.dump(evaluate({label: [(quality, lambda: enhance_then_compress(enhancer, codec))]}, test), f, indent=1)
