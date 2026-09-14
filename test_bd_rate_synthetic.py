@@ -114,6 +114,12 @@ def test_edge_finetune_steps():
         assert torch.equal(enhancer.weight, before[0]) == (part == "codec")
         assert torch.equal(codec.g_a[0].weight, before[1]) == (part == "enhancer")
 
+    # --alpha: aligned 목표와 코덱 입력을 섞어도 코덱만 학습돼야 한다
+    enhancer, codec = torch.nn.Conv2d(3, 3, 3, padding=1), bmshj2018_hyperprior(quality=1, pretrained=False)
+    before = enhancer.weight.clone(), codec.g_a[0].weight.clone()
+    edge_train(enhancer, codec, lows, highs, 0.0018, iters=2, part="codec", target="aligned", crop=64, batch=2, alpha=0.5)
+    assert torch.equal(enhancer.weight, before[0]) and not torch.equal(codec.g_a[0].weight, before[1])
+
     # --target aligned: 영상마다 채널을 섞고 밝기를 바꾼(affine) 결과에 원래 영상을 맞추면 그 결과가 그대로 나와야 한다
     from baseline.edge_finetune import align_tone_batch
     src = torch.rand(2, 3, 16, 16) * 0.5 + 0.25

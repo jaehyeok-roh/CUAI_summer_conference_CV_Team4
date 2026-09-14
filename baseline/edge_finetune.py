@@ -14,6 +14,8 @@ B: 엣지의 경량 향상 모델(IAT) + 기존 코덱을 미세조정한다.
   --target teacher  : 목표 = 학습 전(사전학습) IAT 출력. 향상 결과는 사전학습 IAT 를 따르되, IAT 가 압축하기 좋은 출력을 내도록 같이 배운다
   --target aligned  : 목표 = 정답의 색·톤을 코덱 입력(IAT 출력)에 affine 으로 맞춘 영상 (--train codec 전용, 크롭마다 맞춘다).
                       톤은 IAT 를 따르고 구조는 잡음 없는 정답이라, 코덱이 향상으로 커진 잡음을 복원 대상에서 빼도록 배운다
+  --alpha a         : (--target aligned 전용) 목표 = a x 색·톤 맞춘 정답 + (1 - a) x 코덱 입력. 잡음을 버리는 강도를 조절한다
+                      (a = 1 이 aligned, a = 0 이 input). 비트·구조 충실도와 지각 품질(LPIPS) 사이의 절충점을 고른다
   --source gt       : 코덱 입력을 IAT 출력 대신 정상조도 정답 영상으로 둔다 (--train codec --target input 전용).
                       "향상된 영상에 맞춰서" 비트가 주는지, "LOL 장면에 맞춰서" 주는지 가르는 대조군
   --enhancer zerodce : IAT 대신 Zero-DCE++ (쌍 데이터 없이 학습한 초경량 향상 모델) 를 엣지 향상 모델로 쓴다.
@@ -92,9 +94,10 @@ def align_tone_batch(src, ref):
     return (x @ a).transpose(1, 2).reshape(src.shape).float().clamp(0, 1)
 
 
-def train(enhancer, codec, lows, highs, lmbda, iters, part, target="gt", source="low", crop=256, batch=8, lr=1e-4):
+def train(enhancer, codec, lows, highs, lmbda, iters, part, target="gt", source="low", crop=256, batch=8, lr=1e-4, alpha=1.0):
     """lows[i] -> enhancer -> 코덱 -> 목표(target: gt / input / teacher / aligned, 모듈 설명 참고). part: both / codec / enhancer / enhancer_local.
-    source=gt 면 코덱 입력이 highs[i] 이고 enhancer 를 거치지 않는다. 입력은 uint8 CPU 텐서, crop 은 64 의 배수여야 한다."""
+    source=gt 면 코덱 입력이 highs[i] 이고 enhancer 를 거치지 않는다. alpha 는 aligned 목표와 코덱 입력을 섞는 비율.
+    입력은 uint8 CPU 텐서, crop 은 64 의 배수여야 한다."""
     teacher = copy.deepcopy(enhancer).eval().requires_grad_(False) if target == "teacher" else None  # 학습 전 enhancer
     tune_enhancer, tune_codec = part != "codec", part in ("both", "codec")
     enhancer.train(tune_enhancer).requires_grad_(tune_enhancer)  # 고정이면 eval 모드로 BatchNorm 통계도 그대로 둔다
@@ -118,7 +121,7 @@ def train(enhancer, codec, lows, highs, lmbda, iters, part, target="gt", source=
             ref = x_in.detach()
         elif target == "aligned":  # 정답의 구조(잡음 없음)에 IAT 출력의 색·톤. IAT 가 크롭 통계로 톤을 정해서 크롭마다 맞춘다
             with torch.no_grad():
-                ref = align_tone_batch(y, x_in)
+                ref = alpha * align_tone_batch(y, x_in) + (1 - alpha) * x_in
         else:  # LOL 정답의 색·톤을 새로 배우지 않게, 목표는 사전학습 IAT 출력으로 둔다
             with torch.no_grad():
                 ref = teacher(x)
@@ -153,6 +156,7 @@ def main():
     parser.add_argument("--zerodce_dir", default="./Zero-DCE_extension/Zero-DCE++")
     parser.add_argument("--train", choices=LABELS, default="both")
     parser.add_argument("--target", choices=TARGETS, default="gt")
+    parser.add_argument("--alpha", type=float, default=1.0)
     parser.add_argument("--source", choices=("low", "gt"), default="low")
     parser.add_argument("--qualities", type=int, nargs="+", default=[1, 3, 5])
     parser.add_argument("--iters", type=int, default=5000)
@@ -161,6 +165,8 @@ def main():
     args = parser.parse_args()
     if args.target in ("input", "aligned") and args.train != "codec":
         parser.error("--target input/aligned 는 --train codec 에서만 쓴다 (향상 모델까지 학습하면 목표가 같이 움직인다. 그럴 땐 --target teacher)")
+    if args.alpha != 1 and (args.target != "aligned" or not 0 < args.alpha < 1):
+        parser.error("--alpha 는 --target aligned 에서 0 과 1 사이 값으로만 쓴다 (1 = aligned, 0 = input)")
     if args.source == "gt" and (args.train, args.target) != ("codec", "input"):
         parser.error("--source gt 는 --train codec --target input 에서만 쓴다 (정답 영상 도메인에 코덱만 맞추는 대조군)")
     if args.enhancer == "zerodce" and args.train == "enhancer_local":
@@ -168,7 +174,8 @@ def main():
 
     train_pairs, test = load_eval_pairs(args.train_dir), load_eval_pairs(args.eval_dir)
     lows, highs = [to_uint8(low) for low, _, _ in train_pairs], [to_uint8(high) for _, high, _ in train_pairs]
-    label = LABELS[args.train] + TARGETS[args.target] + (" (adapted on GT images)" if args.source == "gt" else "")
+    target = TARGETS[args.target] if args.alpha == 1 else f" (target: {args.alpha:g} x tone-aligned GT + {1 - args.alpha:g} x IAT output)"
+    label = LABELS[args.train] + target + (" (adapted on GT images)" if args.source == "gt" else "")
     if args.enhancer == "zerodce":
         label = label.replace("IAT", "Zero-DCE++")
     os.makedirs(args.out_dir, exist_ok=True)
@@ -178,9 +185,10 @@ def main():
         codec = bmshj2018_hyperprior(quality=quality, pretrained=True).to(device)
         enhancer = (IAT(args.iat_dir) if args.enhancer == "iat" else ZeroDCE(args.zerodce_dir)).to(device)
         print(f"[q={quality}] {label} 학습 ({args.iters} iters, lambda {LAMBDAS[quality]})", flush=True)
-        train(enhancer, codec, lows, highs, LAMBDAS[quality], args.iters, args.train, args.target, args.source)
-        name = (f"edge_{args.train}" + ("" if args.target == "gt" else f"_{args.target}") + ("_gtsrc" if args.source == "gt" else "")
-                + ("" if args.enhancer == "iat" else f"_{args.enhancer}") + (f"_seed{args.seed}" if args.seed else "") + f"_q{quality}")
+        train(enhancer, codec, lows, highs, LAMBDAS[quality], args.iters, args.train, args.target, args.source, alpha=args.alpha)
+        name = (f"edge_{args.train}" + ("" if args.target == "gt" else f"_{args.target}") + (f"_a{args.alpha:g}" if args.alpha != 1 else "")
+                + ("_gtsrc" if args.source == "gt" else "") + ("" if args.enhancer == "iat" else f"_{args.enhancer}")
+                + (f"_seed{args.seed}" if args.seed else "") + f"_q{quality}")
         torch.save({"codec": codec.state_dict(), "enhancer": enhancer.state_dict()}, os.path.join(args.out_dir, f"{name}.pth"))
         with open(os.path.join(args.out_dir, f"{name}.json"), "w") as f:  # 품질마다 따로 저장해 세션이 끊겨도 끝난 것은 남긴다
             json.dump(evaluate({label: [(quality, lambda: enhance_then_compress(enhancer, codec))]}, test), f, indent=1)
