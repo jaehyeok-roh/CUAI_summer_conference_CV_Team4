@@ -12,6 +12,8 @@ B: 엣지의 경량 향상 모델(IAT) + 기존 코덱을 미세조정한다.
   --target gt       : 목표 = 정상조도 정답 (기본)
   --target input    : 목표 = 코덱 입력(IAT 출력). 표준 RD 손실로 코덱만 향상된 영상 분포에 맞춘다 (--train codec 전용)
   --target teacher  : 목표 = 학습 전(사전학습) IAT 출력. 향상 결과는 사전학습 IAT 를 따르되, IAT 가 압축하기 좋은 출력을 내도록 같이 배운다
+  --target aligned  : 목표 = 정답의 색·톤을 코덱 입력(IAT 출력)에 affine 으로 맞춘 영상 (--train codec 전용, 크롭마다 맞춘다).
+                      톤은 IAT 를 따르고 구조는 잡음 없는 정답이라, 코덱이 향상으로 커진 잡음을 복원 대상에서 빼도록 배운다
   --source gt       : 코덱 입력을 IAT 출력 대신 정상조도 정답 영상으로 둔다 (--train codec --target input 전용).
                       "향상된 영상에 맞춰서" 비트가 주는지, "LOL 장면에 맞춰서" 주는지 가르는 대조군
 
@@ -49,7 +51,7 @@ from refiner import sample_batch, to_uint8
 
 LABELS = {"both": "Joint fine-tuned IAT + codec", "codec": "IAT frozen + fine-tuned codec", "enhancer": "Fine-tuned IAT + codec frozen",
           "enhancer_local": "Fine-tuned IAT local branch + codec frozen"}
-TARGETS = {"gt": "", "input": " (target: IAT output)", "teacher": " (target: pretrained IAT output)"}
+TARGETS = {"gt": "", "input": " (target: IAT output)", "teacher": " (target: pretrained IAT output)", "aligned": " (target: tone-aligned GT)"}
 
 
 class IAT(torch.nn.Module):
@@ -66,8 +68,15 @@ class IAT(torch.nn.Module):
         return self.net(x)[2]
 
 
+def align_tone_batch(src, ref):
+    """src (B, 3, H, W) 의 색·톤을 ref 에 맞춘다: 영상마다 [r, g, b, 1] -> ref 로 가는 affine(4x3) 최소제곱. 0~1 float"""
+    x = torch.cat([src, torch.ones_like(src[:, :1])], 1).flatten(2).transpose(1, 2).double()
+    a = torch.linalg.lstsq(x, ref.flatten(2).transpose(1, 2).double()).solution
+    return (x @ a).transpose(1, 2).reshape(src.shape).float().clamp(0, 1)
+
+
 def train(enhancer, codec, lows, highs, lmbda, iters, part, target="gt", source="low", crop=256, batch=8, lr=1e-4):
-    """lows[i] -> enhancer -> 코덱 -> 목표(target: gt / input / teacher, 모듈 설명 참고). part: both / codec / enhancer / enhancer_local.
+    """lows[i] -> enhancer -> 코덱 -> 목표(target: gt / input / teacher / aligned, 모듈 설명 참고). part: both / codec / enhancer / enhancer_local.
     source=gt 면 코덱 입력이 highs[i] 이고 enhancer 를 거치지 않는다. 입력은 uint8 CPU 텐서, crop 은 64 의 배수여야 한다."""
     teacher = copy.deepcopy(enhancer).eval().requires_grad_(False) if target == "teacher" else None  # 학습 전 enhancer
     tune_enhancer, tune_codec = part != "codec", part in ("both", "codec")
@@ -90,6 +99,9 @@ def train(enhancer, codec, lows, highs, lmbda, iters, part, target="gt", source=
             ref = y
         elif target == "input":
             ref = x_in.detach()
+        elif target == "aligned":  # 정답의 구조(잡음 없음)에 IAT 출력의 색·톤. IAT 가 크롭 통계로 톤을 정해서 크롭마다 맞춘다
+            with torch.no_grad():
+                ref = align_tone_batch(y, x_in)
         else:  # LOL 정답의 색·톤을 새로 배우지 않게, 목표는 사전학습 IAT 출력으로 둔다
             with torch.no_grad():
                 ref = teacher(x)
@@ -128,8 +140,8 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out_dir", default="./results/rd_curve")
     args = parser.parse_args()
-    if args.target == "input" and args.train != "codec":
-        parser.error("--target input 은 --train codec 에서만 쓴다 (향상 모델까지 학습하면 목표가 같이 움직인다. 그럴 땐 --target teacher)")
+    if args.target in ("input", "aligned") and args.train != "codec":
+        parser.error("--target input/aligned 는 --train codec 에서만 쓴다 (향상 모델까지 학습하면 목표가 같이 움직인다. 그럴 땐 --target teacher)")
     if args.source == "gt" and (args.train, args.target) != ("codec", "input"):
         parser.error("--source gt 는 --train codec --target input 에서만 쓴다 (정답 영상 도메인에 코덱만 맞추는 대조군)")
 

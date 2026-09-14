@@ -14,8 +14,9 @@ from compressai.zoo import bmshj2018_hyperprior
 from baseline.cost import pipelines
 from baseline.edge_finetune import train as edge_train
 from baseline.eval_all import codec_then, report as eval_report
-from baseline.joint_finetune import forward as joint_forward, train as joint_train
+from baseline.joint_finetune import align_tone, forward as joint_forward, train as joint_train
 from baseline.refiner import decode_all, finetune, score, to_uint8
+from baseline.split_iat import receiver as split_receiver, train_local as split_train_local
 from baseline.two_stage import evaluate_pipeline
 from dataset import SyntheticLowLight
 from rd_curve import bd_rate
@@ -96,17 +97,28 @@ def test_joint_finetune_steps():
     with torch.no_grad():
         assert torch.allclose(x_hat, codec.eval()(x)["x_hat"], atol=1e-6)
 
+    # 채널을 섞고 밝기를 바꾼(affine) 영상에 원래 영상의 색·톤을 맞추면 그 영상이 그대로 나와야 한다 (--target aligned)
+    src = to_uint8(torch.rand(3, 16, 16) * 0.5 + 0.25)
+    ref = to_uint8(src.flip(0).float() / 255 * 0.8 + 0.1)
+    assert (align_tone(src, ref).int() - ref.int()).abs().max() <= 1
+
 
 def test_edge_finetune_steps():
     # --train/--target 에 따라 향상 모델(IAT 대신 3x3 conv)과 코덱 중 학습하는 쪽만 바뀌어야 한다 (가중치 다운로드 없이)
     lows = [to_uint8(torch.rand(3, 64, 96) * 0.2) for _ in range(2)]
     highs = [to_uint8(torch.rand(3, 64, 96)) for _ in range(2)]
-    for part, target in (("both", "gt"), ("codec", "gt"), ("enhancer", "gt"), ("codec", "input"), ("both", "teacher")):
+    for part, target in (("both", "gt"), ("codec", "gt"), ("enhancer", "gt"), ("codec", "input"), ("both", "teacher"), ("codec", "aligned")):
         enhancer, codec = torch.nn.Conv2d(3, 3, 3, padding=1), bmshj2018_hyperprior(quality=1, pretrained=False)
         before = enhancer.weight.clone(), codec.g_a[0].weight.clone()
         edge_train(enhancer, codec, lows, highs, 0.0018, iters=2, part=part, target=target, crop=64, batch=2)
         assert torch.equal(enhancer.weight, before[0]) == (part == "codec")
         assert torch.equal(codec.g_a[0].weight, before[1]) == (part == "enhancer")
+
+    # --target aligned: 영상마다 채널을 섞고 밝기를 바꾼(affine) 결과에 원래 영상을 맞추면 그 결과가 그대로 나와야 한다
+    from baseline.edge_finetune import align_tone_batch
+    src = torch.rand(2, 3, 16, 16) * 0.5 + 0.25
+    ref = torch.stack([src[0].flip(0) * 0.8 + 0.1, src[1] * 1.2 - 0.05])
+    assert torch.allclose(align_tone_batch(src, ref), ref, atol=1e-5)
 
     # --source gt 대조군은 향상 모델을 거치지 않고 정답 영상으로 코덱만 맞춰야 한다
     class NoEnhancer(torch.nn.Module):
@@ -164,6 +176,54 @@ def test_eval_all():
     assert entry["bd_rate_ssim"] < 0 and entry["wins_PSNR"] == (5, 5)
 
 
+def test_split_iat_steps():
+    # 나눠 돌린 IAT(전역 파라미터를 따로 받아 적용)가 한 번에 돌린 출력과 같고, 재학습은 지역 분기만 바꿔야 한다 (IAT 대신 같은 구조의 작은 모듈)
+    class Local(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv = torch.nn.Conv2d(3, 6, 3, padding=1)
+
+        def forward(self, x):
+            mul, add = self.conv(x).chunk(2, dim=1)
+            return torch.sigmoid(mul) * 2, torch.tanh(add) * 0.1
+
+    class Global(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fc = torch.nn.Linear(3, 10)
+
+        def forward(self, x):
+            out = self.fc(x.mean(dim=(2, 3)))
+            return out[:, :1].sigmoid() + 0.5, out[:, 1:].view(-1, 3, 3) * 0.1 + torch.eye(3)
+
+    class TinyIAT(torch.nn.Module):  # IAT_main.IAT 와 같은 forward 구조
+        def __init__(self):
+            super().__init__()
+            self.local_net, self.global_net = Local(), Global()
+
+        def apply_color(self, image, ccm):
+            shape = image.shape
+            return torch.clamp(torch.tensordot(image.view(-1, 3), ccm, dims=[[-1], [-1]]).view(shape), 1e-8, 1.0)
+
+        def forward(self, img_low):
+            mul, add = self.local_net(img_low)
+            img_high = (img_low * mul + add).permute(0, 2, 3, 1)
+            gamma, color = self.global_net(img_low)
+            img_high = torch.stack([self.apply_color(img_high[i], color[i]) ** gamma[i] for i in range(img_high.shape[0])])
+            return mul, add, img_high.permute(0, 3, 1, 2)
+
+    net = TinyIAT()
+    x = torch.rand(2, 3, 64, 64) * 0.3
+    with torch.no_grad():
+        assert torch.allclose(split_receiver(net, x, *net.global_net(x)), net(x)[2], atol=1e-6)
+
+    lows = [to_uint8(torch.rand(3, 64, 96) * 0.2) for _ in range(2)]
+    highs = [to_uint8(torch.rand(3, 64, 96)) for _ in range(2)]
+    before = net.local_net.conv.weight.clone(), net.global_net.fc.weight.clone()
+    split_train_local(net, lows, lows, highs, iters=2, crop=64, batch=2)  # 복원 영상 자리에 원본을 넣어도 학습 동작은 확인된다
+    assert not torch.equal(net.local_net.conv.weight, before[0]) and torch.equal(net.global_net.fc.weight, before[1])
+
+
 if __name__ == "__main__":
     test_bd_rate()
     test_synthetic_low_light()
@@ -171,6 +231,7 @@ if __name__ == "__main__":
     test_refiner_steps()
     test_joint_finetune_steps()
     test_edge_finetune_steps()
+    test_split_iat_steps()
     test_compute_cost()
     test_eval_all()
     print("OK")
