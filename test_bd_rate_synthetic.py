@@ -97,6 +97,18 @@ def test_joint_finetune_steps():
     with torch.no_grad():
         assert torch.allclose(x_hat, codec.eval()(x)["x_hat"], atol=1e-6)
 
+    # mbt2018-mean(--codec): mean 기준 반올림까지 평가 모드 복원과 같아야 하고, 엣지 코덱 적응 학습도 돌아야 한다
+    from compressai.zoo import mbt2018_mean
+    codec = mbt2018_mean(quality=1, pretrained=False)
+    x_hat, _ = joint_forward(codec.train(), x, ste=True)
+    x_hat.mean().backward()
+    assert codec.g_a[0].weight.grad is not None
+    with torch.no_grad():
+        assert torch.allclose(x_hat, codec.eval()(x)["x_hat"], atol=1e-6)
+    before = codec.g_a[0].weight.clone()
+    edge_train(torch.nn.Conv2d(3, 3, 3, padding=1), codec, lows, highs, 0.0018, iters=2, part="codec", target="aligned", crop=64, batch=2, alpha=0.5)
+    assert not torch.equal(codec.g_a[0].weight, before)
+
     # 채널을 섞고 밝기를 바꾼(affine) 영상에 원래 영상의 색·톤을 맞추면 그 영상이 그대로 나와야 한다 (--target aligned)
     src = to_uint8(torch.rand(3, 16, 16) * 0.5 + 0.25)
     ref = to_uint8(src.flip(0).float() / 255 * 0.8 + 0.1)

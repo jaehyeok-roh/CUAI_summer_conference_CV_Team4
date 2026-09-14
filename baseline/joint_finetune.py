@@ -29,6 +29,7 @@ import sys
 
 import torch
 import torch.nn.functional as F
+from compressai.models.google import MeanScaleHyperprior
 from compressai.zoo import bmshj2018_hyperprior
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 레포 루트
@@ -46,9 +47,18 @@ def forward(codec, x, ste):
         out = codec(x)
         return out["x_hat"], out["likelihoods"]
     y = codec.g_a(x)
-    z_hat, z_likelihoods = codec.entropy_bottleneck(codec.h_a(torch.abs(y)))
-    _, y_likelihoods = codec.gaussian_conditional(y, codec.h_s(z_hat))
-    y_hat = y + (torch.round(y) - y).detach()
+    if isinstance(codec, MeanScaleHyperprior):  # mbt2018-mean: h_s 가 (scale, mean) 을 내고 y 는 mean 기준으로 반올림된다
+        z = codec.h_a(y)
+        _, z_likelihoods = codec.entropy_bottleneck(z)
+        medians = codec.entropy_bottleneck._get_medians().reshape(1, -1, 1, 1)
+        z_hat = z + (torch.round(z - medians) + medians - z).detach()  # mean 이 복원에 쓰이므로 z 도 평가 때처럼 반올림한다
+        scales, means = codec.h_s(z_hat).chunk(2, 1)
+        _, y_likelihoods = codec.gaussian_conditional(y, scales, means=means)
+        y_hat = y + (torch.round(y - means) + means - y).detach()
+    else:
+        z_hat, z_likelihoods = codec.entropy_bottleneck(codec.h_a(torch.abs(y)))
+        _, y_likelihoods = codec.gaussian_conditional(y, codec.h_s(z_hat))
+        y_hat = y + (torch.round(y) - y).detach()
     return codec.g_s(y_hat), {"y": y_likelihoods, "z": z_likelihoods}
 
 

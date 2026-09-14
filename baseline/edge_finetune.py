@@ -18,6 +18,7 @@ B: 엣지의 경량 향상 모델(IAT) + 기존 코덱을 미세조정한다.
                       (a = 1 이 aligned, a = 0 이 input). 비트·구조 충실도와 지각 품질(LPIPS) 사이의 절충점을 고른다
   --source gt       : 코덱 입력을 IAT 출력 대신 정상조도 정답 영상으로 둔다 (--train codec --target input 전용).
                       "향상된 영상에 맞춰서" 비트가 주는지, "LOL 장면에 맞춰서" 주는지 가르는 대조군
+  --codec mbt2018-mean : 기본 bmshj2018-hyperprior 대신 mean-scale hyperprior 코덱으로 같은 실험을 한다 (코덱 일반화 확인).
   --enhancer zerodce : IAT 대신 Zero-DCE++ (쌍 데이터 없이 학습한 초경량 향상 모델) 를 엣지 향상 모델로 쓴다.
                        결과가 IAT·LOL 학습 모델에만 해당하는지 확인하는 용도 (체크포인트·결과 이름에 _zerodce)
 
@@ -45,7 +46,7 @@ import types
 
 import torch
 import torch.nn.functional as F
-from compressai.zoo import bmshj2018_hyperprior
+from compressai.zoo import bmshj2018_hyperprior, mbt2018_mean
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 레포 루트
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # baseline/
@@ -57,6 +58,7 @@ from refiner import sample_batch, to_uint8
 LABELS = {"both": "Joint fine-tuned IAT + codec", "codec": "IAT frozen + fine-tuned codec", "enhancer": "Fine-tuned IAT + codec frozen",
           "enhancer_local": "Fine-tuned IAT local branch + codec frozen"}
 TARGETS = {"gt": "", "input": " (target: IAT output)", "teacher": " (target: pretrained IAT output)", "aligned": " (target: tone-aligned GT)"}
+CODECS = {"bmshj2018-hyperprior": bmshj2018_hyperprior, "mbt2018-mean": mbt2018_mean}  # 앞의 것이 기본
 
 
 class IAT(torch.nn.Module):
@@ -157,6 +159,7 @@ def main():
     parser.add_argument("--iat_dir", default="./Illumination-Adaptive-Transformer/IAT_enhance")
     parser.add_argument("--enhancer", choices=("iat", "zerodce"), default="iat")
     parser.add_argument("--zerodce_dir", default="./Zero-DCE_extension/Zero-DCE++")
+    parser.add_argument("--codec", choices=CODECS, default="bmshj2018-hyperprior")
     parser.add_argument("--train", choices=LABELS, default="both")
     parser.add_argument("--target", choices=TARGETS, default="gt")
     parser.add_argument("--alpha", type=float, default=1.0)
@@ -181,16 +184,18 @@ def main():
     label = LABELS[args.train] + target + (" (adapted on GT images)" if args.source == "gt" else "")
     if args.enhancer == "zerodce":
         label = label.replace("IAT", "Zero-DCE++")
+    label += "" if args.codec == "bmshj2018-hyperprior" else f" [{args.codec}]"
     os.makedirs(args.out_dir, exist_ok=True)
     for quality in args.qualities:
         random.seed(args.seed)
         torch.manual_seed(args.seed)
-        codec = bmshj2018_hyperprior(quality=quality, pretrained=True).to(device)
+        codec = CODECS[args.codec](quality=quality, pretrained=True).to(device)
         enhancer = (IAT(args.iat_dir) if args.enhancer == "iat" else ZeroDCE(args.zerodce_dir)).to(device)
         print(f"[q={quality}] {label} 학습 ({args.iters} iters, lambda {LAMBDAS[quality]})", flush=True)
         train(enhancer, codec, lows, highs, LAMBDAS[quality], args.iters, args.train, args.target, args.source, alpha=args.alpha)
         name = (f"edge_{args.train}" + ("" if args.target == "gt" else f"_{args.target}") + (f"_a{args.alpha:g}" if args.alpha != 1 else "")
                 + ("_gtsrc" if args.source == "gt" else "") + ("" if args.enhancer == "iat" else f"_{args.enhancer}")
+                + ("" if args.codec == "bmshj2018-hyperprior" else "_mbt")
                 + (f"_seed{args.seed}" if args.seed else "") + f"_q{quality}")
         torch.save({"codec": codec.state_dict(), "enhancer": enhancer.state_dict()}, os.path.join(args.out_dir, f"{name}.pth"))
         with open(os.path.join(args.out_dir, f"{name}.json"), "w") as f:  # 품질마다 따로 저장해 세션이 끊겨도 끝난 것은 남긴다
